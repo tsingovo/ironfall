@@ -7,7 +7,6 @@ docs/verify/
 
 # 依赖与构建产物（本项目零依赖，这里只是防御性忽略）
 node_modules/
-dist/
 build/
 
 # 编辑器 / 系统
@@ -18,3 +17,6 @@ Thumbs.db
 desktop.ini
 *.swp
 *~
+
+# 打包产物（由 build-standalone / build-release 生成，作为 Release 附件上传，不入库）
+dist/
