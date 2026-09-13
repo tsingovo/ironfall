@@ -718,9 +718,6 @@ export class WeaponSystem {
     this._fireTimer = 0;
     this._triggerHeld = false;
     this._triggerEdge = false;
-    // 弹匣打空触发自动换弹后，必须松开一次扳机才允许重新开火。
-    // 防止一直按住左键形成“打空—换弹—立即继续打空”的无限循环。
-    this._requireTriggerRelease = false;
 
     // 后坐力
     this.recoil = {
@@ -908,7 +905,9 @@ export class WeaponSystem {
   }
 
   _fireInterval(def) {
-    const rpm = def.rpm * (this.mods.weapon.rpmMul || 1);
+    // 损坏旧存档即使带入极大的有限 rpmMul，也不能绕过射速计时。
+    const rpmMul = M.clamp(Number(this.mods.weapon.rpmMul) || 1, 0.25, 2);
+    const rpm = M.clamp(def.rpm * rpmMul, 1, 1200);
     return 60 / Math.max(1, rpm);
   }
 
@@ -1001,7 +1000,6 @@ export class WeaponSystem {
     // 切枪后重新建立扳机边沿；否则上一把单发枪的按住状态会吞掉
     // 下一次点击，表现为“要按好几下才切成功/开火”。
     this._triggerHeld = false;
-    this._requireTriggerRelease = false;
     this.vm.equipT = instant ? 1 : 0;
     this.vm.holsterT = 0;
     this.vm.reloadStage = 0;
@@ -1224,12 +1222,11 @@ export class WeaponSystem {
 
     // 开火（全自动 / 单发；狙击与霰弹需要重新扣扳机）
     this._fireTimer -= dt;
-    if (!input.fire) this._requireTriggerRelease = false;
     const fullAuto = def.class !== 'sniper' && def.class !== 'shotgun' && def.class !== 'melee';
     const charging = def.chargeTime > 0 && st.charging;
     const boltLocked = !!def.boltAction && (!st.chambered || st.bolting);
     const wantsFire = (fullAuto ? !!input.fire : (!!input.fire && !this._triggerHeld))
-      && !this._requireTriggerRelease && !charging && !boltLocked;
+      && input.weaponShotConsumed !== true && !charging && !boltLocked;
 
     if (wantsFire && this.vm.equipT >= 1 && !st.reloading && this._fireTimer <= 0) {
       // 每个模拟帧最多发射一发。旧逻辑会在未命中的长射线/卡顿帧之后用 while
@@ -1237,13 +1234,14 @@ export class WeaponSystem {
       // 丢弃历史欠账不会影响正常 60/120Hz 射速，却能保证一次 update 只扣一发。
       if (st.ammo <= 0) {
         Events.emit('audio:play', { name: def.emptySound });
-        if (st.reserve > 0) {
-          this._requireTriggerRelease = true;
-          this._startReload(st, def);
-        }
+        if (st.reserve > 0) this._startReload(st, def);
         this._fireTimer = 0.22;
       } else {
+        const ammoBefore = st.ammo;
         this._fire(st, def, input);
+        // 一次更新严格只消费一发；同一渲染帧后续固定物理子步不能再次消费。
+        st.ammo = Math.max(0, ammoBefore - 1);
+        input.weaponShotConsumed = true;
         if (def.boltAction) {
           // 栓动枪的下一次可射击时间由拉栓决定，而不是再叠加一段
           // 过长的 RPM 间隔；拉栓结束后扣扳机即可开火。
