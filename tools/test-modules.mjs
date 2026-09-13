@@ -394,12 +394,36 @@ if (wp) {
   fireProbe.projectiles = { update() {} };
   fireProbe.recoil = { aimPitch: 0, aimYaw: 0, visPitch: 0, visYaw: 0, patternIndex: 0, recoveryDelay: 0 };
   fireProbe._fireTimer = -2; fireProbe._triggerHeld = true;
+  fireProbe._requireTriggerRelease = false;
   fireProbe._updateRecoil = () => {};
   fireProbe._updateViewmodel = () => {};
   fireProbe._fire = (state) => { state.ammo--; };
   fireProbe.update(0, { fire: true });
   check('严重欠帧或未命中后单帧最多只扣一发弹药',
     fireState.ammo === 23 && fireProbe._fireTimer > 0 && !fireState.reloading);
+
+  // 120Hz 固定步下，R-99 的 1080RPM 一秒约 18 发，不能一帧/一秒清空 24 发。
+  fireState.ammo = 24; fireState.reloading = false; fireProbe._fireTimer = 0;
+  fireProbe._triggerHeld = true; fireProbe._requireTriggerRelease = false;
+  for (let i = 0; i < 120; i++) fireProbe.update(1 / 120, { fire: true });
+  check('持续射击严格受 1080RPM 计时限制，一秒不会清空 24 发弹匣',
+    fireState.ammo >= 5 && fireState.ammo <= 7 && !fireState.reloading,
+    `remaining=${fireState.ammo}`);
+
+  // 打空后的自动换弹不能在仍按住左键时自行恢复射击；必须松开再按。
+  fireState.ammo = 0; fireState.reloading = false; fireProbe._fireTimer = 0;
+  fireProbe._requireTriggerRelease = false;
+  fireProbe.update(0, { fire: true });
+  const latched = fireState.reloading && fireProbe._requireTriggerRelease;
+  fireState.reloadT = fireState.reloadDuration;
+  fireProbe.update(0, { fire: true });
+  const afterReloadAmmo = fireState.ammo;
+  fireProbe.update(1, { fire: true });
+  check('自动换弹后持续按住左键不会再次开火，必须先松开扳机',
+    latched && fireState.ammo === afterReloadAmmo && afterReloadAmmo === 24);
+  fireProbe.update(0, { fire: false });
+  fireProbe.update(0, { fire: true });
+  check('松开并重新按下左键后可正常开火', fireState.ammo === 23);
 
   // 音频名必须存在
   const audio = mods['src/audio/audio.js'];

@@ -761,6 +761,24 @@ class Game {
         }
         Input.exitLock();
         break;
+      case 'quit_game':
+        // 独立 Chromium app 窗口通常允许由明确用户点击关闭。先完整释放游戏状态，
+        // 即使浏览器策略拒绝 window.close，也不会留下锁鼠标/持续开火状态。
+        if (this.inventory) this.inventory.setOpen(false, this.player);
+        this.setPlaying(false);
+        this.paused = true;
+        this.director.stop();
+        Input.exitLock();
+        this.exitFullscreen();
+        try {
+          window.close();
+        } catch (_e) { /* 下方提示兜底 */ }
+        setTimeout(() => {
+          if (!window.closed && this.hud) {
+            this.hud.toast('浏览器阻止了自动关闭', '请按 Alt+F4 退出独立游戏窗口', 'warn');
+          }
+        }, 180);
+        break;
       case 'pick_upgrade':
         this.pickUpgrade(payload && payload.id);
         break;

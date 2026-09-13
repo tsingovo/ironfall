@@ -718,6 +718,9 @@ export class WeaponSystem {
     this._fireTimer = 0;
     this._triggerHeld = false;
     this._triggerEdge = false;
+    // 弹匣打空触发自动换弹后，必须松开一次扳机才允许重新开火。
+    // 防止一直按住左键形成“打空—换弹—立即继续打空”的无限循环。
+    this._requireTriggerRelease = false;
 
     // 后坐力
     this.recoil = {
@@ -998,6 +1001,7 @@ export class WeaponSystem {
     // 切枪后重新建立扳机边沿；否则上一把单发枪的按住状态会吞掉
     // 下一次点击，表现为“要按好几下才切成功/开火”。
     this._triggerHeld = false;
+    this._requireTriggerRelease = false;
     this.vm.equipT = instant ? 1 : 0;
     this.vm.holsterT = 0;
     this.vm.reloadStage = 0;
@@ -1220,11 +1224,12 @@ export class WeaponSystem {
 
     // 开火（全自动 / 单发；狙击与霰弹需要重新扣扳机）
     this._fireTimer -= dt;
+    if (!input.fire) this._requireTriggerRelease = false;
     const fullAuto = def.class !== 'sniper' && def.class !== 'shotgun' && def.class !== 'melee';
     const charging = def.chargeTime > 0 && st.charging;
     const boltLocked = !!def.boltAction && (!st.chambered || st.bolting);
     const wantsFire = (fullAuto ? !!input.fire : (!!input.fire && !this._triggerHeld))
-      && !charging && !boltLocked;
+      && !this._requireTriggerRelease && !charging && !boltLocked;
 
     if (wantsFire && this.vm.equipT >= 1 && !st.reloading && this._fireTimer <= 0) {
       // 每个模拟帧最多发射一发。旧逻辑会在未命中的长射线/卡顿帧之后用 while
@@ -1232,7 +1237,10 @@ export class WeaponSystem {
       // 丢弃历史欠账不会影响正常 60/120Hz 射速，却能保证一次 update 只扣一发。
       if (st.ammo <= 0) {
         Events.emit('audio:play', { name: def.emptySound });
-        if (st.reserve > 0) this._startReload(st, def);
+        if (st.reserve > 0) {
+          this._requireTriggerRelease = true;
+          this._startReload(st, def);
+        }
         this._fireTimer = 0.22;
       } else {
         this._fire(st, def, input);

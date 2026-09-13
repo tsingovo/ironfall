@@ -838,6 +838,15 @@ group('G4 菜单：变体 / 键盘导航 / 点击 / 意图');
   root.querySelector('#menu-pause-item-3').click();
   eq('暂停菜单发出 quit_to_menu', intents.length && intents[0].name, 'quit_to_menu');
 
+  intents.length = 0;
+  root.querySelector('#menu-pause-item-4').click();
+  eq('暂停菜单提供退出游戏并发出 quit_game', intents.length && intents[0].name, 'quit_game');
+
+  hud.showMenu('main');
+  intents.length = 0;
+  root.querySelector('#menu-main-item-8').click();
+  eq('主菜单提供退出游戏并发出 quit_game', intents.length && intents[0].name, 'quit_game');
+
   // 阵亡统计
   ctx.run.stats = { kills: 23, headshots: 9, damage: 7350, timeSec: 611, tier: 3, alloy: 512 };
   hud.showMenu('dead');

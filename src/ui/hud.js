@@ -54,7 +54,7 @@ const CREDITS_LINES = [
 // 菜单静态描述：构造时一次性建 DOM，之后只切 class / 文本。
 const MENU_SPEC = {
   main: {
-    tag: 'IRONFALL // BUILD 2.0.2',
+    tag: 'IRONFALL // BUILD 2.0.3',
     title: '钢铁远征',
     sub: 'IRONFALL',
     note: '你是钢铁远征舰队熔炉世界里的拾荒者。搜刮、变强、活着撤离。',
@@ -67,6 +67,7 @@ const MENU_SPEC = {
       { key: '6', label: '设置', sub: 'SETTINGS', intent: 'open_settings' },
       { key: '7', label: '操作说明', sub: 'CONTROLS', intent: 'open_help' },
       { key: '8', label: '制作名单', sub: 'CREDITS', intent: 'open_credits' },
+      { key: '9', label: '退出游戏', sub: 'EXIT TO DESKTOP', intent: 'quit_game', danger: true },
     ],
   },
   campaign: {
@@ -105,6 +106,7 @@ const MENU_SPEC = {
       { key: '2', label: '设置', sub: 'SETTINGS', intent: 'open_settings' },
       { key: '3', label: '操作说明', sub: 'CONTROLS', intent: 'open_help' },
       { key: '4', label: '放弃远征', sub: 'ABANDON RUN', intent: 'quit_to_menu', danger: true },
+      { key: '5', label: '退出游戏', sub: 'EXIT TO DESKTOP', intent: 'quit_game', danger: true },
     ],
   },
   dead: {
