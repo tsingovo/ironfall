@@ -100,27 +100,12 @@ function makeZip(files) {
 }
 
 // ---------------------------------------------------------------- 发布包内容
-
-const LAUNCHER = `@echo off
-setlocal
-cd /d "%~dp0"
-
-rem IRONFALL · 钢铁远征 —— 双击即玩
-rem 用系统默认浏览器打开单文件游戏本体，不需要 Node、不需要联网。
-
-set "GAME=%~dp0IRONFALL.html"
-if not exist "%GAME%" (
-  echo.
-  echo 找不到 IRONFALL.html，请确认它和本文件在同一个文件夹里。
-  echo.
-  pause
-  exit /b 1
-)
-
-echo 正在用默认浏览器启动 IRONFALL ...
-start "" "%GAME%"
-exit /b 0
-`;
+//
+// 目录结构与开发仓库**刻意保持一致**：根目录有 开始游戏.cmd，tools/ 下有
+// launch-app.mjs / serve-single.mjs。这样发布包和本地开发环境是同一套启动代码，
+// 行为完全一致 —— 独立 App 窗口（--app），不会受 Ctrl+W 等标签页快捷键干扰。
+//
+// 唯一的区别：游戏本体是构建好的单文件 IRONFALL.html（开发仓库里是 index.html + src/）。
 
 const README_TXT = `IRONFALL · 钢铁远征  v${pkgVersion}
 工业星际远征背景的第一人称射击 Roguelike
@@ -128,18 +113,26 @@ const README_TXT = `IRONFALL · 钢铁远征  v${pkgVersion}
 
 【怎么玩】
 
-  双击「开始游戏.cmd」，或者直接双击「IRONFALL.html」。
+  解压后双击「开始游戏.cmd」。
 
-  不需要安装 Node.js，不需要联网，不需要任何配置。
-  游戏是一个单文件网页（IRONFALL.html），在浏览器里跑。
+  它会：
+    1. 检查你的电脑有没有 Node.js；没有就自动下载一个便携版
+       （只下载这一次，解压到 %LOCALAPPDATA%\\IRONFALL\\runtime，
+        不需要管理员权限，不改动系统设置）
+    2. 在本机起一个游戏服务器（浏览器安全策略要求，不能直接用文件打开）
+    3. 用一个**独立游戏窗口**打开游戏 —— 没有标签栏和地址栏，
+       所以按 Ctrl+W 之类不会把游戏关掉
+
+  需要联网：只有第一次运行需要（下载运行环境）。之后就完全离线了。
 
 【需要什么】
 
-  · 一个较新的浏览器：Chrome / Edge（推荐，需要 WebGL2），
-    Firefox 也可。
-  · 独立显卡或较新的集成显卡，建议 1080p 以上分辨率。
+  · Windows 10 / 11
+  · Chrome 或 Edge（推荐，需要 WebGL2）
+  · 独立显卡或较新的集成显卡，建议 1080p 以上分辨率
+  · 首次运行需要联网（约 30 MB 下载）
 
-【第一次进入】
+【第一次进入游戏】
 
   1. 首屏是开始界面 → 按 1 或点「开始远征」
   2. 画面中央出现「点击进入战场」→ 点一下画面
@@ -166,14 +159,15 @@ const README_TXT = `IRONFALL · 钢铁远征  v${pkgVersion}
 【关于 Ctrl+W】
 
   Ctrl+W / Ctrl+T / F11 是浏览器保留快捷键，网页无权拦截。
-  游戏开始时会自动进入全屏，全屏下浏览器不再把它当成关闭标签页。
-  如果仍担心误触，建议用 Chrome 的「安装为应用」把 IRONFALL.html
-  装成独立窗口（地址栏右侧图标 → 安装），那样没有标签栏。
+  本游戏用独立 App 窗口运行（没有标签栏），所以 Ctrl+W 不会关掉游戏。
+
+  想换服务器端口：命令行里先 set IRONFALL_PORT=9000 再运行启动器。
 
 【存档】
 
-  进度保存在浏览器的本地存储里（跟具体浏览器和文件位置绑定）。
-  换浏览器或移动文件位置会读不到旧存档。
+  进度保存在浏览器的本地存储里。
+  注意：普通浏览器模式（tools\\serve.mjs）和独立窗口模式使用不同的
+  浏览器配置目录，所以两种方式的存档是分开的。
 
 【这是什么】
 
@@ -195,13 +189,18 @@ async function main() {
 
   const html = await readFile(HTML);
   const license = existsSync(join(ROOT, 'LICENSE')) ? await readFile(join(ROOT, 'LICENSE')) : Buffer.from('MIT');
+  const launcher = await readFile(join(ROOT, 'tools/launcher-release.cmd'));
+  const launchApp = await readFile(join(ROOT, 'tools/launch-app.mjs'));
+  const serveSingle = await readFile(join(ROOT, 'tools/serve-single.mjs'));
   const enc = (s) => Buffer.from(s.replace(/\r?\n/g, '\r\n'), 'utf8');
 
   const files = [
+    { name: '开始游戏.cmd', data: enc(launcher.toString('utf8')) },
     { name: 'IRONFALL.html', data: html },
-    { name: '开始游戏.cmd', data: enc(LAUNCHER) },
     { name: '使用说明.txt', data: enc(README_TXT) },
     { name: 'LICENSE', data: license },
+    { name: 'tools/launch-app.mjs', data: launchApp },
+    { name: 'tools/serve-single.mjs', data: serveSingle },
   ];
 
   const zip = makeZip(files);
@@ -210,9 +209,9 @@ async function main() {
 
   const mb = (n) => (n / 1024 / 1024).toFixed(2) + ' MB';
   console.log(`IRONFALL 发布包 v${pkgVersion}`);
-  for (const f of files) console.log(`  + ${f.name}  (${(f.data.length / 1024).toFixed(0)} KB)`);
+  for (const f of files) console.log(`  + ${f.name}  (${(f.data.length / 1024).toFixed(1)} KB)`);
   console.log(`  产物: dist/IRONFALL-${pkgVersion}-offline.zip  (${mb(zip.length)})`);
-  console.log('  解压后双击「开始游戏.cmd」即玩。');
+  console.log('  解压后双击「开始游戏.cmd」：自动备好运行环境 → 独立 App 窗口启动。');
 }
 
 main().catch((e) => { console.error('打包失败:', e && e.message ? e.message : e); process.exit(1); });

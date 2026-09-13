@@ -119,6 +119,30 @@ async function ensureServer() {
   }
   if (existing.reachable) throw new Error(`端口 ${port} 已被其他程序占用`);
 
+  // --single <html>：发布包模式。游戏是单个 HTML，用极简服务器直接吐它。
+  // 仍然走 HTTP 的原因：ES Modules 在 file:// 下会被 CORS 拦，
+  // 而且 --app 独立窗口模式对 file:// 无效。
+  const singleIdx = process.argv.indexOf('--single');
+  const singleFile = singleIdx >= 0 ? process.argv[singleIdx + 1] : null;
+
+  if (singleFile) {
+    log('正在启动 IRONFALL 本地服务器（单文件模式）…');
+    const server = spawn(process.execPath, [join(here, 'serve-single.mjs'), singleFile, String(port)], {
+      cwd: root,
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    server.unref();
+    for (let i = 0; i < 80; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const state = await probeServer();
+      if (state.ironfall) return;
+      if (state.reachable) throw new Error(`端口 ${port} 被其他程序占用`);
+    }
+    throw new Error('本地游戏服务器启动超时');
+  }
+
   log('正在启动 IRONFALL 本地服务器…');
   const server = spawn(process.execPath, [join(here, 'serve.mjs'), String(port)], {
     cwd: root,
