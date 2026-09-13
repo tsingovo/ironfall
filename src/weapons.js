@@ -905,9 +905,7 @@ export class WeaponSystem {
   }
 
   _fireInterval(def) {
-    // 损坏旧存档即使带入极大的有限 rpmMul，也不能绕过射速计时。
-    const rpmMul = M.clamp(Number(this.mods.weapon.rpmMul) || 1, 0.25, 2);
-    const rpm = M.clamp(def.rpm * rpmMul, 1, 1200);
+    const rpm = def.rpm * (this.mods.weapon.rpmMul || 1);
     return 60 / Math.max(1, rpm);
   }
 
@@ -1226,28 +1224,25 @@ export class WeaponSystem {
     const charging = def.chargeTime > 0 && st.charging;
     const boltLocked = !!def.boltAction && (!st.chambered || st.bolting);
     const wantsFire = (fullAuto ? !!input.fire : (!!input.fire && !this._triggerHeld))
-      && input.weaponShotConsumed !== true && !charging && !boltLocked;
+      && !charging && !boltLocked;
 
-    if (wantsFire && this.vm.equipT >= 1 && !st.reloading && this._fireTimer <= 0) {
-      // 每个模拟帧最多发射一发。旧逻辑会在未命中的长射线/卡顿帧之后用 while
-      // “补发”最多 8 发，表现为瞬间吞掉大量弹药并反复自动换弹。
-      // 丢弃历史欠账不会影响正常 60/120Hz 射速，却能保证一次 update 只扣一发。
-      if (st.ammo <= 0) {
-        Events.emit('audio:play', { name: def.emptySound });
-        if (st.reserve > 0) this._startReload(st, def);
-        this._fireTimer = 0.22;
-      } else {
-        const ammoBefore = st.ammo;
+    if (wantsFire && this.vm.equipT >= 1 && !st.reloading) {
+      // v1.0.0 原版射击调度：按累计时间补发，最多 8 发。
+      let guard = 0;
+      while (this._fireTimer <= 0 && guard++ < 8) {
+        if (st.ammo <= 0) {
+          Events.emit('audio:play', { name: def.emptySound });
+          if (st.reserve > 0) this._startReload(st, def);
+          this._fireTimer = 0.22;
+          break;
+        }
         this._fire(st, def, input);
-        // 一次更新严格只消费一发；同一渲染帧后续固定物理子步不能再次消费。
-        st.ammo = Math.max(0, ammoBefore - 1);
-        input.weaponShotConsumed = true;
         if (def.boltAction) {
           // 栓动枪的下一次可射击时间由拉栓决定，而不是再叠加一段
           // 过长的 RPM 间隔；拉栓结束后扣扳机即可开火。
           this._fireTimer = Math.max(0.01, st.boltDuration || def.boltTime || 0.34);
         } else {
-          this._fireTimer = this._fireInterval(def);
+          this._fireTimer += this._fireInterval(def);
         }
       }
     } else if (this._fireTimer < 0) {

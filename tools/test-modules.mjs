@@ -375,8 +375,7 @@ if (wp) {
     probe.recoil.aimPitch > 0 && probe.recoil.visPitch > 0
       && noShakeState.spreadExtra > 0);
 
-  // 严重卡顿或未命中的远射线会让计时器积累很大的负数；一帧只能消费一发，
-  // 绝不能用 catch-up while 瞬间扣掉 8 发并马上触发换弹。
+  // 用户明确要求把射击调度回退到 v1.0.0：累计时间欠账、单次最多补发 8 发。
   const fireState = {
     ...probe._newState?.('r99'), id: 'r99', ammo: 24, reserve: Infinity,
     reloading: false, reloadT: 0, reloadDuration: wp.WEAPONS.r99.reloadTime,
@@ -398,20 +397,8 @@ if (wp) {
   fireProbe._updateViewmodel = () => {};
   fireProbe._fire = (state) => { state.ammo--; };
   fireProbe.update(0, { fire: true });
-  check('严重欠帧或未命中后单帧最多只扣一发弹药',
-    fireState.ammo === 23 && fireProbe._fireTimer > 0 && !fireState.reloading);
-
-  const sameRenderInput = { fire: true, weaponShotConsumed: false };
-  fireState.ammo = 24; fireProbe._fireTimer = 0;
-  fireProbe.update(0, sameRenderInput);
-  fireProbe._fireTimer = -10;
-  fireProbe.update(0, sameRenderInput);
-  check('同一渲染帧的多个固定物理子步合计只能消费一发', fireState.ammo === 23);
-
-  fireProbe.mods.weapon.rpmMul = 1e12;
-  check('损坏旧存档无法把射速推到 1200RPM 安全上限以上',
-    fireProbe._fireInterval(wp.WEAPONS.r99) >= 0.05);
-  fireProbe.mods.weapon.rpmMul = 1;
+  check('射击调度已精确恢复 v1.0.0 的最多 8 发累计补发行为',
+    fireState.ammo === 16 && fireProbe._fireTimer < 0 && !fireState.reloading);
 
   // 120Hz 固定步下，R-99 的 1080RPM 一秒约 18 发，不能一帧/一秒清空 24 发。
   fireState.ammo = 24; fireState.reloading = false; fireProbe._fireTimer = 0;

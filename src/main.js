@@ -1399,8 +1399,6 @@ class Game {
     // 视角增量按"本帧实际执行的物理步数"均摊，保证不同帧率下转头速度一致。
     this.accumulator += scaledDt;
     const inputState = this.readInput();
-    // 一帧可能补跑多个固定物理步，但按住开火在整帧内只能消费一发。
-    inputState.weaponShotConsumed = false;
     const pendingLookX = inputState.lookX;
     const pendingLookY = inputState.lookY;
     const planSteps = Math.min(MAX_STEPS_PER_FRAME, Math.floor(this.accumulator / PHYS_DT));
