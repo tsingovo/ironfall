@@ -221,6 +221,8 @@ export class LanSession {
   get inSession() { return this.phase === LAN_PHASE.LOBBY || this.phase === LAN_PHASE.PLAYING; }
   get latency() { return Math.round(this._t.latencyAvg || this._t.latency || 0); }
   get peerCount() { return 1 + this.remotes.size; }
+  /** 本局配置（地图/种子）；未开局时为 null */
+  get sessionInfo() { return this._sessionInfo; }
 
   /** 供 HUD 使用的一份快照 */
   lobbyState() {
@@ -536,6 +538,10 @@ export class LanSession {
       }
     }
     if (Number.isFinite(data.x)) run.extractHold = data.x;
+    // 2.0.7 的舍入：objective 全部完成也要等 bossPending 清零才推进阶段
+    // （run.js 的 `remaining === 0 && !this.bossPending`）。房客的导演是停的，
+    // 永远不会自己清掉这个标志，不同步就会卡在第 3/6/10 层永远无法撤离。
+    if (typeof data.b === 'number') run.bossPending = data.b === 1;
   }
 
   _onWorldEvent(from, data) {
@@ -587,14 +593,18 @@ export class LanSession {
       if (!e) {
         const typeId = codec.enemyTypeOf(row[1] | 0);
         if (!typeId) continue;
-        e = enemies.spawn(typeId, [row[2], row[3], row[4]], { id });
+        // scale / elite 必须一起带过来：2.0.7 的守关首领是 scale 1.6 的精英重装，
+        // 漏掉就会在房客端退化成普通体型，连命中盒都是错的。
+        const scale = Number.isFinite(row[11]) && row[11] > 0 ? row[11] : 1;
+        const elite = (row[8] & EFLAG.ELITE) !== 0;
+        e = enemies.spawn(typeId, [row[2], row[3], row[4]], { id, scale, elite });
         e.yaw = row[5] || 0;
         e.aimYaw = e.yaw;
         e._netSnap = true;
       }
       const flags = row[8] | 0;
       const alive = (flags & EFLAG.ALIVE) !== 0;
-      // 位置/朝向走插值目标；血量等状态立刻生效。
+      // 位置/朝向走插值目标；血量与上限立刻生效。
       let t = this._enemyTargets.get(id);
       if (!t) { t = { x: 0, y: 0, z: 0, yaw: 0 }; this._enemyTargets.set(id, t); }
       t.x = row[2]; t.y = row[3]; t.z = row[4]; t.yaw = row[5];
@@ -602,6 +612,9 @@ export class LanSession {
         e.pos[0] = t.x; e.pos[1] = t.y; e.pos[2] = t.z;
         e._netSnap = false;
       }
+      // 先写上限再写当前值：HUD 血条读的是 hp/maxHp，顺序反了会闪一帧 600%。
+      if (Number.isFinite(row[9]) && row[9] > 0) e.maxHp = row[9];
+      if (Number.isFinite(row[10]) && row[10] >= 0) e.maxShield = row[10];
       enemies.applyNetState(e, row[6], row[7], alive, undefined);
     }
     // 快照里已经不存在的敌人：直接退役，避免客户端留下“幽灵敌人”。
@@ -642,6 +655,7 @@ export class LanSession {
       rows.push([
         e.id, slot, q2(e.pos[0]), q2(e.pos[1]), q2(e.pos[2]), q4(e.yaw),
         q1(e.hp), q1(e.shield), flags,
+        q1(e.maxHp), q1(e.maxShield), q2(e.scale || 1),
       ]);
     }
     this._t.sendGame({ k: MSG.ENEMY, e: rows });
@@ -738,6 +752,7 @@ export class LanSession {
       p: run.phase,
       o: obj,
       x: q2(run.extractHold || 0),
+      b: run.bossPending ? 1 : 0,
     });
   }
 

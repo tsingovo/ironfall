@@ -645,9 +645,13 @@ class Game {
 
   /**
    * 联机开局后的收尾：
-   *  · 房主：把权威模式装回敌人系统，并向全体广播本局配置（地图/种子）。
+   *  · 房主：把权威模式装回敌人系统，并在**本局配置真的变了**时广播 SESSION。
    *  · 房客：切到复制模式（敌人不跑 AI），等待房主的敌人快照。
    * 非联机时整段是空操作。
+   *
+   * 这里按“配置是否变化”而不是“是否开局”来决定广播，是因为本方法同时服务于
+   * `startRun()` 与 `retryRun()`：后者在房主阵亡重来时不该把全队拽回开局，
+   * 只有战役推进到下一层（地图/种子变了）才需要重新下发。
    */
   _afterLanRunStart() {
     const lan = this.lan;
@@ -657,13 +661,19 @@ class Game {
     }
     lan.applyRoleToWorld();
     if (lan.isHost) {
-      lan.announceSession({
-        mapIndex: this.mapIndex,
-        seed: this.mapSeed,
-        tier: this.tier,
-        mapName: this.mapName,
-      });
-      this.director.start(this.run);
+      // startRun() 已经 director.start() 过了，这里不能再调一次：
+      // director.start() 会重置 budget/phaseTime/_spawnHistory，重复调用虽然不会
+      // 重复刷怪（spawnOpeningWave 有 _openingSpawned 保护），但会白白丢掉本帧状态。
+      const prev = lan.sessionInfo;
+      const changed = !prev || prev.seed !== this.mapSeed || prev.mapIndex !== this.mapIndex;
+      if (changed) {
+        lan.announceSession({
+          mapIndex: this.mapIndex,
+          seed: this.mapSeed,
+          tier: this.tier,
+          mapName: this.mapName,
+        });
+      }
     } else {
       // 房客不跑刷怪导演；敌人完全来自房主快照。
       this.director.stop();
@@ -682,6 +692,9 @@ class Game {
   _onLanSessionStart(info) {
     if (!this.lan) return;
     this._pendingLanStart = info;
+    // 联机的层级推进由房主决定；房客本地残留的 _nextTier 必须清掉，
+    // 否则它会在自己的 retryRun 里试图换一张房主没同意的图。
+    this._nextTier = 0;
     if (this.hud) this.hud.hideMenu();
     this.startRun();
   }
@@ -1029,9 +1042,14 @@ class Game {
         }
         break;
       case 'lan_start':
-        // 房主在房间里点“开始远征”：走与单机完全相同的入口，开局后再广播配置。
-        if (this.lan && this.lan.isHost && this.lan.online) this.startRun();
-        else if (this.hud) this.hud.toast('只有房主可以开局', '请等待房主开始远征', 'warn');
+        // 与上游 start_run 保持同一语义：上一局结束后应推进到下一层，而不是
+        // 就地重开当前层（_nextTier 由 _onRunEnd 设置）。
+        if (this.lan && this.lan.isHost && this.lan.online) {
+          if (this._nextTier) this.retryRun();
+          else this.startRun();
+        } else if (this.hud) {
+          this.hud.toast('只有房主可以开局', '请等待房主开始远征', 'warn');
+        }
         break;
       case 'lan_chat':
         if (this.lan && this.lan.online) this.lan.sendChat((payload && payload.value) || '');
@@ -1270,7 +1288,10 @@ class Game {
       // 正常路径
     }
     if (this.weapons && typeof this.weapons.resetLoadout === 'function') this.weapons.resetLoadout();
-    if (this._nextTier && this._nextTier !== this.tier) {
+    // 联机：换图/换种子只能由房主决定。房客本地重掷会立刻和房主的地图错位，
+    // 因此房客只重开当前这张图；房主推进到下一层后会重新广播 SESSION，房客再跟随。
+    const lanGuest = this._lanGuest();
+    if (this._nextTier && this._nextTier !== this.tier && !lanGuest) {
       this.tier = this._nextTier;
       this.mapIndex = this.tier - 1;
       this.loadMission(this.mapIndex, {});
@@ -1301,6 +1322,7 @@ class Game {
     this.setPlaying(true);
     Input.setMenuBlocking(false);
     this._requestPointerLockWithRetry();
+    this._afterLanRunStart();
   }
 
   /**

@@ -208,8 +208,18 @@ export function createCodec(tables = {}) {
   };
 }
 
-/** 敌人快照元组的字段数：id, 兵种槽, x, y, z, yaw, hp, shield, 位标志 */
-export const ENEMY_TUPLE = 9;
+/**
+ * 敌人快照元组的字段数。
+ *
+ *   0 id      1 兵种槽   2 x   3 y   4 z   5 yaw
+ *   6 hp      7 shield   8 位标志
+ *   9 maxHp  10 maxShield  11 scale
+ *
+ * 后三项是 2.0.7 守关首领带来的：首领 `maxHp *= 5 + tier`、`maxShield *= 3`、
+ * `scale = 1.6`。不同步上限，房客端血条会算成 600%；不同步 scale，房客看到的
+ * 首领是普通体型、命中盒也跟着错。
+ */
+export const ENEMY_TUPLE = 12;
 
 /** 敌人位标志 */
 export const EFLAG = Object.freeze({

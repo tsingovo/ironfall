@@ -1,6 +1,6 @@
 # IRONFALL 局域网联机（LAN CO-OP）
 
-> 版本：随 2.0.6 分支 `feat/LAN` 引入
+> 版本：基于 IRONFALL 2.0.7（分支 `feat/LAN`）
 > 目标：同一路由器下的 2–4 人合作打一局搜打撤远征，零第三方依赖、零构建步骤。
 
 ---
@@ -107,7 +107,7 @@ node tools/lan-server.mjs 18200 --host 0.0.0.0
 |---|---|---|---|
 | `ps` | 每人 → 全体 | 30 Hz | 自身玩家状态元组（16 个数字） |
 | `es` | 房主 → 房客 | 20 Hz | 敌人快照（每只 9 个数字） |
-| `run` | 房主 → 房客 | 2 Hz | 单局阶段 / 目标进度 / 撤离读条 |
+| `run` | 房主 → 房客 | 2 Hz | 单局阶段 / 目标进度 / 撤离读条 / `bossPending` |
 | `sess` | 房主 → 房客 | 一次 | 地图配置 `{mapIndex, seed, tier, mapName}` |
 | `hit` | 房客 → 房主 | 按需 | 命中申报（敌人 id、原始伤害、命中点、法线） |
 | `dmg` | 房主 → 单个房客 | 按需 | 敌人对该玩家造成的伤害 |
@@ -123,13 +123,17 @@ x y z  yaw pitch  vx vy vz  health shield  moveStateIdx flags weaponIdx hspeed m
 - 位置 2 位小数（1 cm）、角度 4 位小数（≈0.006°）：在 30 Hz 下远高于视觉需要。
 - `flags` 位：`ALIVE GROUNDED CROUCHING SLIDING ADS RELOADING FIRING GRAPPLE SPRINTING`。
 
-敌人快照元组（`ENEMY_TUPLE = 9`）：
+敌人快照元组（`ENEMY_TUPLE = 12`）：
 
 ```
-id typeSlot x y z yaw hp shield flags
+id typeSlot x y z yaw hp shield flags maxHp maxShield scale
 ```
 
-兵种槽表用 `ENEMY_IDS` 的**固定导出顺序**，不能用运行时刷怪顺序（那会随当局变化）。
+- 兵种槽表用 `ENEMY_IDS` 的**固定导出顺序**，不能用运行时刷怪顺序（那会随当局变化）。
+- 末尾三项是 2.0.7 的守关首领逼出来的：首领由房主的 director 手动放大
+  （`scale = 1.6`、`maxHp *= 5 + tier`、`maxShield *= 3`）。不同步 `maxHp`，
+  房客端 `hp / maxHp` 会算出 600% 的血条；不同步 `scale`，房客看到的是普通体型，
+  连命中盒都是错的。`scale`/`elite` 只在房客侧建号时用一次，上限每包跟随更新。
 
 ---
 
@@ -160,13 +164,43 @@ id typeSlot x y z yaw hp shield flags
 同种子地图的 `world.groundHeight()`。因此“击杀归谁”这件事只需要广播一个
 “是谁打死的”，击杀者本机即可复现出完全相同的掉落，不需要任何掉落同步消息。
 
+### 4.4 与 2.0.7 守关首领的对接
+
+2.0.7 引入的首领有两个地方会直接破坏联机，都已处理并被测试覆盖：
+
+1. **`run.bossPending` 门控目标完成。** `director.start()` 写入
+   `run.bossPending = [3,6,10].includes(tier)`，`run.js` 改成
+   `remaining === 0 && !this.bossPending` 才推进阶段。房客的导演是**停止**的，
+   永远不会自己清掉这个标志 —— 不同步的话，房客在第 3/6/10 层会把目标全打完却
+   永远进不了撤离阶段。现在 `bossPending` 随 `RUN` 消息（2 Hz）同步。
+
+2. **首领是房主凭空造出来的特殊敌人。** director 直接
+   `enemies.spawn('heavy', pos, { elite: true, scale: 1.6 })` 然后手改
+   `maxHp`/`maxShield`。因此敌人快照必须带上 `scale`/`elite`（建号用）与
+   `maxHp`/`maxShield`（血条用），否则房客端是一只普通体型、血条爆表的假首领。
+
+### 4.5 联机下的关卡推进
+
+`Run` 结束时会写 `_nextTier`，`retryRun()` 消费它并 `loadMission()`——
+**这一步是本地生成地图的**，联机时会让两端错位。现在的规则：
+
+- **房主**：照常推进到下一层，随后 `_afterLanRunStart()` 按“配置是否变化”
+  （`seed` / `mapIndex` 与上次广播的 `sessionInfo` 比较）决定要不要重新发 `SESSION`。
+- **房客**：`retryRun()` 不做换图（`_lanGuest()` 挡掉），只重开当前这张图；
+  真正的换层由房主的新 `SESSION` 驱动，收到后 `startRun()` 用新种子重建地图。
+- **第 10 关打完**：上游会回主菜单并把下一轮重置到第 1 层。两端各自走完这条路径；
+  房主重新开局时 `seed`/`mapIndex` 都变了，会正常触发新的 `SESSION`。
+
+> 房客在 `_onLanSessionStart` 里会清掉本地的 `_nextTier`：层级推进由房主决定，
+> 残留值会让房客试图换一张房主没同意的图。
+
 ---
 
 ## 5. 已知边界（本轮范围）
 
 1. **队友之间没有物理碰撞**，可以互相穿过（见 §2 的取舍）。
-2. **`Run`（单局目标/撤离）仍是半同步**：房主广播目标进度与阶段，房客照抄显示；
-   但撤离读条与结算仍是各人自己的，不做“全队必须一起撤离”。
+2. **`Run`（单局目标/撤离）仍是半同步**：房主广播目标进度、阶段与 `bossPending`，
+   房客照抄显示；但撤离读条与结算仍是各人自己的，不做“全队必须一起撤离”。
 3. **敌人对玩家的仇恨是就近选择**（带 20% 迟滞，避免两名队友距离接近时来回换目标）。
    没有仇恨值/嘲讽等高级机制。
 4. **断线不做存档恢复**：房客掉线后房主保留其代理一小段时间并显示“离线”，
@@ -174,6 +208,8 @@ id typeSlot x y z yaw hp shield flags
 5. **上限 4 人**（`MAX_PEERS_PER_ROOM`），超出会被服务器以 `room_full` 拒绝。
 6. 房客不跑刷怪导演，因此**房客本机的 `director` 一直处于停止状态**；这是预期行为，
    端到端测试里有对应断言。
+7. 房客被敌人击中时，伤害由房主判定、房客本人结算，因此房客端的**受击方向指示**
+   是房主提供的方向，不包含房客自己的本地视角修正。
 
 ---
 
@@ -182,12 +218,13 @@ id typeSlot x y z yaw hp shield flags
 ```powershell
 node tools/test-lan-server.mjs   # 服务器：帧编解码 / 房间 / 房主转移 / 中继（30 项）
 node tools/test-lan-map.mjs      # 同图：生成确定性 / JSON 往返 / 十关可复现（22 项）
-node tools/test-lan.mjs          # 端到端：两个真实 Chrome 客户端（45 项）
+node tools/test-lan.mjs          # 端到端：两个真实 Chrome 客户端（62 项）
 ```
 
 `tools/test-lan.mjs` 会起一个真实的局域网服务器和两个互相独立的 Chrome 实例，
 走完整链路：建房 → 加入 → 聊天 → 开局 → 同图同种子 → 互相看见 → 队友模型像素可见
-→ 敌人同步 → 命中转发 → 敌人伤害转发 → 运行期无异常。
+→ 敌人同步 → 命中转发 → 敌人伤害转发 → 推进到第 3 层 → 首领同步与 `bossPending`
+解除 → 运行期无异常。
 
 截图输出在 `docs/verify/lan/`（该目录不入库）。
 

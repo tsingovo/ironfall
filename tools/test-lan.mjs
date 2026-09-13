@@ -609,6 +609,64 @@ try {
     typeof hpAfter === 'number' && typeof hpBefore === 'number' && hpAfter < hpBefore - 1,
     `${hpBefore} → ${hpAfter}`);
 
+  section('8b. 2.0.7 守关首领的联机同步');
+
+  // 首领是本轮唯一“房主凭空造出来的特殊敌人”：director 里手动放大它
+  // （scale 1.6、maxHp *= 5 + tier、maxShield *= 3），并用 run.bossPending
+  // 门控目标完成。房客的导演是停的，永远不会自己清掉这个标志——这条测试钉死它。
+  await host.ev(`(() => {
+    const g = window.__IRONFALL__.game;
+    g.tier = 3; g.mapIndex = 2;
+    window.__IRONFALL__.startRun();
+    return true;
+  })()`);
+
+  const guestTier = await guest.waitFor('window.__IRONFALL__.game.tier', 25000, 'guest tier');
+  check('房客跟随房主推进到第 3 层（首领层）', guestTier === 3, String(guestTier));
+
+  const bossUp = await host.waitFor(`(() => {
+    const g = window.__IRONFALL__.game;
+    const b = g.enemies.all.find(e => e.alive && e.elite && e.typeId === 'heavy');
+    return b ? { id: b.id, hp: b.hp, maxHp: b.maxHp, shield: b.shield, maxShield: b.maxShield, scale: b.scale } : false;
+  })()`, 35000, 'host boss');
+  check('房主刷出了守关首领', !!(bossUp && bossUp.id), JSON.stringify(bossUp));
+  check('首领是放大过的精英（scale > 1.2）', !!(bossUp && bossUp.scale > 1.2), JSON.stringify(bossUp));
+  check('首领血量上限高于普通重装', !!(bossUp && bossUp.maxHp > 100), JSON.stringify(bossUp));
+
+  const bossId = bossUp && bossUp.id;
+  const guestBoss = bossId != null ? await guest.waitFor(`(() => {
+    const e = window.__IRONFALL__.game.enemies.findByNetId(${bossId});
+    return e ? { scale: e.scale, maxHp: e.maxHp, maxShield: e.maxShield, hp: e.hp, elite: !!e.elite } : false;
+  })()`, 15000, 'guest boss') : null;
+  check('房客也生成了同一只首领', !!(guestBoss && guestBoss.scale), JSON.stringify(guestBoss));
+  check('房客端首领体型与房主一致（scale 已同步）',
+    !!(guestBoss && bossUp && Math.abs(guestBoss.scale - bossUp.scale) < 0.05),
+    `host=${bossUp && bossUp.scale} guest=${guestBoss && guestBoss.scale}`);
+  check('房客端首领血量上限与房主一致（血条不会超过 100%）',
+    !!(guestBoss && bossUp && Math.abs(guestBoss.maxHp - bossUp.maxHp) < 2),
+    `host=${bossUp && bossUp.maxHp} guest=${guestBoss && guestBoss.maxHp}`);
+  check('房客端首领护盾上限与房主一致',
+    !!(guestBoss && bossUp && Math.abs(guestBoss.maxShield - bossUp.maxShield) < 2),
+    `host=${bossUp && bossUp.maxShield} guest=${guestBoss && guestBoss.maxShield}`);
+
+  const hostPending = await host.ev('window.__IRONFALL__.game.run.bossPending');
+  check('房主端 bossPending 为真', hostPending === true, String(hostPending));
+  const guestPending = await guest.waitFor('window.__IRONFALL__.game.run.bossPending === true', 10000, 'guest pending');
+  check('房客端 bossPending 同步为真', guestPending === true, String(guestPending));
+
+  // 房主击杀首领 → 两端都必须解除门控，否则房客在第 3/6/10 层永远无法撤离
+  await host.ev(`(() => {
+    const g = window.__IRONFALL__.game;
+    const b = g.enemies.findByNetId(${bossId});
+    if (b) g.enemies.damage(b, 1e6, false, [b.pos[0], b.pos[1] + 1, b.pos[2]], [0, 1, 0], {});
+    return true;
+  })()`);
+  const hostCleared = await host.waitFor('window.__IRONFALL__.game.run.bossPending === false', 12000, 'host cleared');
+  check('首领被击败后房主解除 bossPending', hostCleared === true, String(hostCleared));
+  const guestCleared = await guest.waitFor('window.__IRONFALL__.game.run.bossPending === false', 15000, 'guest cleared');
+  check('房客端 bossPending 同步解除（否则第 3/6/10 层目标永远无法完成）',
+    guestCleared === true, String(guestCleared));
+
   section('9. 画面与运行期健康度');
 
   await host.shot('after-run');
