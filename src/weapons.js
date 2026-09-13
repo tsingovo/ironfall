@@ -718,6 +718,9 @@ export class WeaponSystem {
     this._fireTimer = 0;
     this._triggerHeld = false;
     this._triggerEdge = false;
+    // 弹匣打空并触发自动换弹后，持续按住左键不能让新弹匣立刻再次开火。
+    // 玩家必须先松开扳机；这同时阻断“打空—换弹—再次打空”的无限循环。
+    this._requireTriggerRelease = false;
 
     // 后坐力
     this.recoil = {
@@ -998,6 +1001,7 @@ export class WeaponSystem {
     // 切枪后重新建立扳机边沿；否则上一把单发枪的按住状态会吞掉
     // 下一次点击，表现为“要按好几下才切成功/开火”。
     this._triggerHeld = false;
+    this._requireTriggerRelease = false;
     this.vm.equipT = instant ? 1 : 0;
     this.vm.holsterT = 0;
     this.vm.reloadStage = 0;
@@ -1219,34 +1223,35 @@ export class WeaponSystem {
     }
 
     // 开火（全自动 / 单发；狙击与霰弹需要重新扣扳机）
-    this._fireTimer -= dt;
+    // 只推进当前冷却，不保存负数“射击欠账”。1.0 的补发 while 在较轻的
+    // 旧场景里不明显，但 2.0 未命中时的长距离世界判定更重，卡顿后会把多发
+    // 欠账一次扣掉，表现为弹匣瞬空。每次 update 最多只允许一次真实开火。
+    this._fireTimer = Math.max(0, this._fireTimer - dt);
+    if (!input.fire) this._requireTriggerRelease = false;
     const fullAuto = def.class !== 'sniper' && def.class !== 'shotgun' && def.class !== 'melee';
     const charging = def.chargeTime > 0 && st.charging;
     const boltLocked = !!def.boltAction && (!st.chambered || st.bolting);
     const wantsFire = (fullAuto ? !!input.fire : (!!input.fire && !this._triggerHeld))
-      && !charging && !boltLocked;
+      && !this._requireTriggerRelease && !charging && !boltLocked;
 
-    if (wantsFire && this.vm.equipT >= 1 && !st.reloading) {
-      // v1.0.0 原版射击调度：按累计时间补发，最多 8 发。
-      let guard = 0;
-      while (this._fireTimer <= 0 && guard++ < 8) {
-        if (st.ammo <= 0) {
-          Events.emit('audio:play', { name: def.emptySound });
-          if (st.reserve > 0) this._startReload(st, def);
-          this._fireTimer = 0.22;
-          break;
+    if (wantsFire && this.vm.equipT >= 1 && !st.reloading && this._fireTimer <= 0) {
+      if (st.ammo <= 0) {
+        Events.emit('audio:play', { name: def.emptySound });
+        if (st.reserve > 0) {
+          this._requireTriggerRelease = true;
+          this._startReload(st, def);
         }
+        this._fireTimer = 0.22;
+      } else {
         this._fire(st, def, input);
         if (def.boltAction) {
           // 栓动枪的下一次可射击时间由拉栓决定，而不是再叠加一段
           // 过长的 RPM 间隔；拉栓结束后扣扳机即可开火。
           this._fireTimer = Math.max(0.01, st.boltDuration || def.boltTime || 0.34);
         } else {
-          this._fireTimer += this._fireInterval(def);
+          this._fireTimer = this._fireInterval(def);
         }
       }
-    } else if (this._fireTimer < 0) {
-      this._fireTimer = Math.min(0, this._fireTimer + this._fireInterval(def));
     }
     this._triggerHeld = !!input.fire;
 

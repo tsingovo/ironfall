@@ -375,7 +375,8 @@ if (wp) {
     probe.recoil.aimPitch > 0 && probe.recoil.visPitch > 0
       && noShakeState.spreadExtra > 0);
 
-  // 用户明确要求把射击调度回退到 v1.0.0：累计时间欠账、单次最多补发 8 发。
+  // 2.0 场景在未命中时可能有较重的世界射线判定；不允许把卡顿期间的射击
+  // 欠账用 while 一次补发，否则会出现“射空时弹匣瞬空、命中时正常”。
   const fireState = {
     ...probe._newState?.('r99'), id: 'r99', ammo: 24, reserve: Infinity,
     reloading: false, reloadT: 0, reloadDuration: wp.WEAPONS.r99.reloadTime,
@@ -393,20 +394,45 @@ if (wp) {
   fireProbe.projectiles = { update() {} };
   fireProbe.recoil = { aimPitch: 0, aimYaw: 0, visPitch: 0, visYaw: 0, patternIndex: 0, recoveryDelay: 0 };
   fireProbe._fireTimer = -2; fireProbe._triggerHeld = true;
+  fireProbe._requireTriggerRelease = false;
   fireProbe._updateRecoil = () => {};
   fireProbe._updateViewmodel = () => {};
   fireProbe._fire = (state) => { state.ammo--; };
   fireProbe.update(0, { fire: true });
-  check('射击调度已精确恢复 v1.0.0 的最多 8 发累计补发行为',
-    fireState.ammo === 16 && fireProbe._fireTimer < 0 && !fireState.reloading);
+  check('严重欠帧或未命中后单次更新最多只扣一发弹药',
+    fireState.ammo === 23 && fireProbe._fireTimer > 0 && !fireState.reloading);
 
   // 120Hz 固定步下，R-99 的 1080RPM 一秒约 18 发，不能一帧/一秒清空 24 发。
   fireState.ammo = 24; fireState.reloading = false; fireProbe._fireTimer = 0;
-  fireProbe._triggerHeld = true;
+  fireProbe._triggerHeld = true; fireProbe._requireTriggerRelease = false;
   for (let i = 0; i < 120; i++) fireProbe.update(1 / 120, { fire: true });
   check('持续射击严格受 1080RPM 计时限制，一秒不会清空 24 发弹匣',
     fireState.ammo >= 5 && fireState.ammo <= 7 && !fireState.reloading,
     `remaining=${fireState.ammo}`);
+
+  // 命中与未命中只影响命中反馈，绝不能改变单次扣弹数量。
+  for (const hit of [false, true]) {
+    fireState.ammo = 24; fireState.reloading = false; fireProbe._fireTimer = -5;
+    fireProbe._requireTriggerRelease = false;
+    fireProbe._fire = (state) => { state.ammo--; fireProbe._lastProbeHit = hit; };
+    fireProbe.update(0, { fire: true });
+    check(`${hit ? '命中' : '未命中'}路径一次更新严格只扣一发`, fireState.ammo === 23);
+  }
+
+  // 自动换弹后持续按住左键不得继续射击；必须松开一次再重新按下。
+  fireState.ammo = 0; fireState.reloading = false; fireProbe._fireTimer = 0;
+  fireProbe._requireTriggerRelease = false;
+  fireProbe.update(0, { fire: true });
+  const latched = fireState.reloading && fireProbe._requireTriggerRelease;
+  fireState.reloadT = fireState.reloadDuration;
+  fireProbe.update(0, { fire: true });
+  const afterReloadAmmo = fireState.ammo;
+  fireProbe.update(1, { fire: true });
+  check('打空自动换弹后按住左键不会再次开火',
+    latched && fireState.ammo === afterReloadAmmo && afterReloadAmmo === 24);
+  fireProbe.update(0, { fire: false });
+  fireProbe.update(0, { fire: true });
+  check('松开并重新按下左键后恢复正常开火', fireState.ammo === 23);
 
   // 音频名必须存在
   const audio = mods['src/audio/audio.js'];
