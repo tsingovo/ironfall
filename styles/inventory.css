@@ -1,0 +1,186 @@
+/* ==== 搜打撤式背包：独立于暂停菜单，避免复用旧菜单状态机造成 Esc 软锁 ==== */
+#inventory-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 190;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  color: #d8edf7;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(22, 43, 58, .35), rgba(3, 6, 9, .82) 62%),
+    linear-gradient(90deg, rgba(4, 8, 11, .86), rgba(9, 16, 21, .70), rgba(4, 8, 11, .86));
+  backdrop-filter: blur(4px);
+  transition: opacity .12s ease;
+  user-select: none;
+}
+
+#inventory-overlay.inventory-overlay--on {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.inventory-panel {
+  width: min(1180px, 92vw);
+  max-height: 90vh;
+  padding: 22px 26px 18px;
+  border: 1px solid rgba(113, 220, 255, .38);
+  border-top: 3px solid #70dfff;
+  background: rgba(8, 13, 18, .95);
+  box-shadow: 0 22px 90px rgba(0, 0, 0, .6), inset 0 0 44px rgba(38, 167, 214, .04);
+  clip-path: polygon(0 14px, 14px 0, 100% 0, 100% calc(100% - 14px), calc(100% - 14px) 100%, 0 100%);
+}
+
+.inventory-head,
+.inventory-panel footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.inventory-head { margin-bottom: 16px; }
+.inventory-head div { display: flex; align-items: baseline; gap: 15px; }
+.inventory-head b { font-size: 27px; letter-spacing: .16em; color: #eefaff; }
+.inventory-head span,
+.inventory-panel footer { color: rgba(191, 218, 231, .66); font-size: 13px; letter-spacing: .08em; }
+#inventory-capacity { color: #73e3ff; font-size: 18px; }
+#inventory-capacity.inventory-capacity--full { color: #ff684f; }
+
+.inventory-loadout {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 9px;
+  margin-bottom: 14px;
+}
+
+.inventory-weapon-slot {
+  position: relative;
+  min-height: 82px;
+  padding: 11px 12px 9px 45px;
+  border: 1px solid rgba(118, 168, 190, .20);
+  background: linear-gradient(135deg, rgba(27, 39, 48, .92), rgba(11, 17, 23, .92));
+}
+.inventory-weapon-slot--active { border-color: rgba(255, 178, 58, .72); box-shadow: inset 3px 0 #ffb23a; }
+.inventory-weapon-slot--over { border-color: #71dcff; background: rgba(38, 76, 92, .92); transform: translateY(-2px); }
+.inventory-weapon-slot em {
+  position: absolute; left: 11px; top: 12px; width: 24px; height: 24px; line-height: 24px;
+  text-align: center; font-style: normal; font-weight: 800; color: #071116; background: #75ddf8;
+}
+.inventory-weapon-slot span { display: block; color: #728d9b; font-size: 11px; letter-spacing: .15em; }
+.inventory-weapon-slot b { display: block; margin-top: 6px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 14px; }
+.inventory-weapon-slot small {
+  display: block; margin-top: 5px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  color: #73d7f2; font-size: 10px; letter-spacing: .02em;
+}
+.inventory-attachment-list { display: flex !important; gap: 4px; align-items: center; }
+.inventory-attachment-chip {
+  display: inline-block; max-width: 112px; padding: 2px 5px; overflow: hidden;
+  color: #8ee8ff; border: 1px solid rgba(93, 211, 242, .35); background: rgba(32, 68, 82, .72);
+  font-style: normal; white-space: nowrap; text-overflow: ellipsis; cursor: grab;
+}
+
+.inventory-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(82px, 1fr));
+  gap: 8px;
+}
+
+.inventory-slot {
+  position: relative;
+  aspect-ratio: 1.25;
+  min-height: 74px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 1px solid rgba(119, 160, 179, .17);
+  background: linear-gradient(145deg, rgba(27, 36, 43, .66), rgba(10, 15, 20, .76));
+  transition: transform .08s ease, border-color .08s ease, background .08s ease;
+}
+.inventory-slot::after {
+  content: '';
+  position: absolute; inset: 4px;
+  border: 1px solid rgba(255, 255, 255, .025);
+  pointer-events: none;
+}
+.inventory-slot--filled { cursor: grab; }
+.inventory-slot--filled:hover,
+.inventory-slot--over { transform: translateY(-2px); border-color: #71dcff; background: rgba(40, 71, 86, .80); }
+.inventory-slot--dragging { opacity: .35; transform: scale(.96); }
+.inventory-slot--common { box-shadow: inset 0 -3px #87949e; }
+.inventory-slot--rare { box-shadow: inset 0 -3px #3c9fe9; }
+.inventory-slot--epic { box-shadow: inset 0 -3px #9b57dc; }
+.inventory-slot--legendary { box-shadow: inset 0 -3px #ffad30; }
+.inventory-slot--utility {
+  cursor: default;
+  border-color: rgba(102, 222, 255, .48);
+  background: linear-gradient(145deg, rgba(24, 55, 70, .92), rgba(13, 25, 34, .92));
+}
+.inventory-slot--utility b { color: #7ee8ff; font-size: 19px; text-shadow: 0 0 12px rgba(78, 214, 255, .55); }
+.inventory-slot span { max-width: 92%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; }
+.inventory-slot b { position: absolute; right: 8px; bottom: 8px; color: #fff; font-size: 13px; }
+.inventory-item-icon { font-style: normal; font-size: 24px; color: #8ce8ff; text-shadow: 0 0 12px rgba(86, 212, 255, .45); }
+.inventory-slot--epic .inventory-item-icon { color: #c68cff; }
+.inventory-slot--legendary .inventory-item-icon { color: #ffc04f; }
+
+.inventory-drop-zone {
+  margin-top: 12px;
+  height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed rgba(255, 100, 74, .36);
+  color: rgba(255, 137, 117, .72);
+  background: rgba(84, 20, 14, .12);
+  font-size: 13px;
+  letter-spacing: .14em;
+}
+.inventory-drop-zone--over { border-color: #ff684f; color: #fff; background: rgba(156, 42, 25, .34); }
+.inventory-panel footer { margin-top: 12px; }
+
+.inventory-tooltip {
+  position: fixed;
+  z-index: 90;
+  width: min(360px, calc(100vw - 28px));
+  padding: 14px 16px 13px;
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  color: #dbeaf1;
+  border: 1px solid color-mix(in srgb, var(--item-rarity, #8fdfff) 72%, transparent);
+  border-left: 4px solid var(--item-rarity, #8fdfff);
+  background: linear-gradient(145deg, rgba(11, 18, 24, .985), rgba(5, 9, 13, .985));
+  box-shadow: 0 15px 44px rgba(0, 0, 0, .62), inset 0 0 28px rgba(99, 210, 255, .035);
+  transform: translateY(4px);
+  transition: opacity .08s ease, transform .08s ease;
+  white-space: normal;
+}
+.inventory-tooltip--on { visibility: visible; opacity: 1; transform: translateY(0); }
+.inventory-tooltip header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.inventory-tooltip header b { color: #f4fbff; font-size: 17px; letter-spacing: .06em; }
+.inventory-tooltip header span { flex: none; color: var(--item-rarity, #8fdfff); font-size: 11px; letter-spacing: .10em; }
+.inventory-tooltip > strong {
+  display: block; margin-top: 10px; padding: 7px 9px;
+  color: #b9f1ff; border: 1px solid rgba(96, 217, 249, .20); background: rgba(48, 125, 150, .13);
+  font-size: 13px; line-height: 1.45;
+}
+.inventory-tooltip p { margin: 9px 0 7px; color: #b9cbd4; font-size: 12px; line-height: 1.55; }
+.inventory-tooltip > div { color: #8fa8b4; font-size: 11px; line-height: 1.55; white-space: pre-line; }
+.inventory-tooltip small {
+  display: block; margin-top: 9px; padding-top: 8px; border-top: 1px solid rgba(145, 190, 208, .13);
+  color: #e9ba68; font-size: 11px; line-height: 1.5;
+}
+
+@media (max-width: 760px) {
+  .inventory-panel { width: 96vw; padding: 14px; overflow-y: auto; }
+  .inventory-loadout { grid-template-columns: repeat(2, 1fr); }
+  .inventory-grid { grid-template-columns: repeat(4, minmax(64px, 1fr)); }
+  .inventory-head span { display: none; }
+}

@@ -1,0 +1,2081 @@
+// ==== main.js — 启动、主循环、系统编排、自动化测试钩子 ====
+// 循环结构：
+//   * 物理固定步 1/128 秒，累加器驱动，单帧最多 6 步（防死亡螺旋）
+//   * 渲染帧率不设上限（rAF），相机在帧内对位置做插值 => 高帧率下画面依旧顺滑
+//   * 每帧顺序：输入 → 物理 N 步 → 相机/后坐力 → 特效 → 世界/敌人/武器渲染 → HUD
+
+import { CFG } from './core/config.js';
+import * as M from './core/math.js';
+import * as Events from './core/events.js';
+import { Input } from './core/input.js';
+import { Engine } from './engine/engine.js';
+import { createSharedMeshes } from './engine/fx-meshes.js';
+import { World } from './world.js';
+import { Player } from './player.js';
+import { WeaponSystem, WEAPONS } from './weapons.js';
+import { EnemySystem, ENEMY_TYPES } from './enemies.js';
+import { Director } from './director.js';
+import { Run, RUN_PHASE } from './run.js';
+import { UpgradeSystem, RARITIES } from './upgrades.js';
+import { Audio } from './audio/audio.js';
+import { ParticleSystem } from './fx/particles.js';
+import { DecalSystem } from './fx/decals.js';
+import { ScreenShake } from './fx/screenshake.js';
+import { EnemyMarkerSystem } from './fx/enemy-markers.js';
+import { generateMap, MISSIONS, getMission, getBiome, BIOMES } from './maps/builtin-maps.js';
+import { loadGLTF, gltfInstanceModels } from './fx/gltf.js';
+import { HUD } from './ui/hud.js';
+import { Save, MetaProgress } from './save.js';
+import { InventorySystem, LOOT_DEFS } from './inventory.js';
+import { PlayerModelRenderer } from './player-model.js';
+
+const PHYS_DT = 1 / 128;
+const MAX_STEPS_PER_FRAME = 6;
+
+// 治疗轮盘固定顺序。索引同时供 HUD、背包和第一人称道具动作使用，不能再用
+// “0 是药、其余全是电池”这种二选一判断，否则新增小药后会静默串错效果。
+const HEALING_DEFS = Object.freeze([
+  { id: 'medkit', key: 'medkits', name: '医疗包', target: 'health', amount: Infinity, duration: 3.0,
+    startSound: 'medkit_use', loopSound: 'medkit_loop', completeSound: 'medkit_complete' },
+  { id: 'shield_battery', key: 'shieldBatteries', name: '护盾电池', target: 'shield', amount: Infinity, duration: 2.5,
+    startSound: 'shield_battery_use', loopSound: 'shield_battery_loop', completeSound: 'shield_battery_complete' },
+  { id: 'syringe', key: 'syringes', name: '注射器', target: 'health', amount: 25, duration: 1.0,
+    startSound: 'syringe_use', loopSound: 'syringe_loop', completeSound: 'syringe_complete' },
+  { id: 'shield_cell', key: 'shieldCells', name: '小型护盾电池', target: 'shield', amount: 25, duration: 1.0,
+    startSound: 'shield_cell_use', loopSound: 'shield_cell_loop', completeSound: 'shield_cell_complete' },
+]);
+
+/** 全局错误收集（自动化测试与调试面板都依赖它） */
+export const errors = [];          // 注意：Game/boot 在文件末尾的 export 列表里统一导出。
+                                   // 不要在这里写 `export class Game` —— Node 24.15(V8) 会把
+                                   // "export class X {}" + "export { X }" 误判为重复导出（浏览器正常，
+                                   // 但会让无头自测与静态检查无法导入本模块）。
+function recordError(message, stack) {
+  errors.push({ message: String(message), stack: stack ? String(stack).slice(0, 600) : '', time: Date.now() });
+  if (errors.length > 40) errors.shift();
+}
+
+class Game {
+  constructor(canvas, hudRoot) {
+    this.canvas = canvas;
+    this.hudRoot = hudRoot;
+    this.engine = null;
+    this.world = null;
+    this.player = null;
+    this.weapons = null;
+    this.enemies = null;
+    this.director = null;
+    this.run = null;
+    this.upgrades = null;
+    this.particles = null;
+    this.decals = null;
+    this.shake = null;
+    this.hud = null;
+    this.inventory = null;
+    this.playerModel = null;
+
+    // Apex 风格治疗资源：轻按 5 使用当前选中道具，长按 5 打开轮盘并
+    // 通过鼠标方向/数字键选择。每局重新补充，资源状态交给 HUD 只读展示。
+    this.healing = {
+      medkits: Infinity,
+      shieldBatteries: Infinity,
+      syringes: Infinity,
+      shieldCells: Infinity,
+      wheelOpen: false,
+      selection: 0,
+      holdTime: 0,
+      useActive: false,
+      useItem: 0,
+      useT: 0,
+      useDuration: 0,
+    };
+
+    this.running = false;
+    this.paused = true;
+    this.menuKind = 'main';
+    // 独立启动器使用 Chromium 的 app 窗口并由系统最大化。这里不要再叠加网页
+    // Fullscreen API；否则 Chromium 会优先用 Esc 退出网页全屏，表现成“按 Esc
+    // 小窗化”，页面甚至可能收不到 Escape keydown。
+    this.standalone = (() => {
+      try { return new URLSearchParams(window.location.search).get('standalone') === '1'; }
+      catch (_e) { return false; }
+    })();
+    this._playing = false;          // 明确的初始状态：还没开始游玩
+    this._menuOpenShown = false;
+    this.accumulator = 0;
+    this.lastTime = 0;
+    this.frameCount = 0;
+    this.elapsed = 0;
+    this.timeScale = 1;
+    this.slowmoTimer = 0;
+    this.slowmoScale = 1;
+    this.automation = false;
+    this.debugFlags = { showOverlay: false };
+
+    this.meta = new MetaProgress();
+    this.settings = this._loadSettings();
+
+    this.mapIndex = 0;
+    this.tier = 1;
+    this._ready = false;
+    this._interp = 1;
+    this._boundFrame = this.frame.bind(this);
+    this._events = [];
+    this._promptText = '';
+    this._lastPlayerPos = new Float32Array(3);
+    this._stuckCheckTimer = 0;
+    this._pointerRelockTimer = 0;
+  }
+
+  // ================================================================ 初始化
+
+  async init() {
+    // 输入必须在最前面初始化：绑定键位表、挂载 DOM 监听、准备指针锁定。
+    // 漏掉这一步的后果是"游戏完全收不到输入且不报错"，所以放在第一行。
+    Input.init(this.canvas);
+
+    const engine = new Engine(this.canvas, { antialias: true });
+    this.engine = engine;
+    this.glInfo = engine.getInfo();
+    createSharedMeshes(engine);
+
+    // 世界
+    const world = new World(engine);
+    this.world = world;
+    this.loadMission(0, { initial: true });
+
+    // 玩家
+    const player = new Player(world, engine, {
+      queryGrappleTarget: (origin, dir, range) => (
+        this.enemies ? this.enemies.queryGrappleTarget(origin, dir, range) : null
+      ),
+    });
+    this.player = player;
+    this.playerModel = new PlayerModelRenderer(engine, player);
+    // 武器视图模型读取该只读引用，用于在治疗读条期间显示医疗包/护盾电池。
+    player.healing = this.healing;
+
+    // 敌人
+    this.enemies = new EnemySystem(world, player, engine, {
+      onKill: (enemy, headshot) => this._onEnemyKill(enemy, headshot),
+    });
+
+    // 特效
+    this.particles = new ParticleSystem(engine, CFG.fx.maxParticles);
+    this.decals = new DecalSystem(engine, CFG.fx.maxDecals);
+    this.shake = new ScreenShake();
+    // 敌人高亮标记：保持高对比，但必须服从深度遮挡，不能透过地板/墙体。
+    this.enemyMarkers = new EnemyMarkerSystem(engine);
+
+    // 武器
+    this.weapons = new WeaponSystem(engine, world, player, { enemies: this.enemies });
+    this.enemies.projectiles = this.weapons.projectiles;
+    this.enemies.particles = this.particles;
+
+    // 搜打撤式背包与地图掉落：独立于 HUD 暂停菜单，Tab 可直接开关。
+    this.inventory = new InventorySystem(engine, this.hudRoot, { weapons: this.weapons, weaponDefs: WEAPONS });
+    this.inventory.reset(world, this.mapSeed || 1);
+
+    // 升级
+    // 当前游戏内强化不再依赖合金：合金仍用于统计/奖励展示，但升级与刷新均免费。
+    this.upgrades = new UpgradeSystem(player, this.weapons, { tier: this.tier, freeUpgrades: true });
+    this.upgrades.addAlloy(0);
+
+    // 导演与单局
+    this.director = new Director(world, this.enemies, player, { particles: this.particles });
+    this.run = new Run(world, player, this.enemies, {});
+    this.inventory.setGameplayContext({
+      player,
+      run: this.run,
+      // 从背包双击无限药品时先关闭背包，再启动与 5 键完全相同的读条/减速/打断流程。
+      onUseHealing: (index) => {
+        if (this.inventory.open) this.closeBackpack();
+        return this._startHealingUse(index);
+      },
+    });
+
+    // 玩家出生
+    player.respawn(this.findSpawn());
+    this._applyModifiers();
+
+    // HUD
+    this.hud = new HUD(this.hudRoot, {
+      player, weapons: this.weapons, enemies: this.enemies, director: this.director,
+      run: this.run, upgrades: this.upgrades, audio: Audio, engine, world, input: Input,
+      config: CFG, stats: engine.stats, errors, settings: this.settings, healing: this.healing,
+      inventory: this.inventory,
+    });
+    this.hud.onIntent = (name, payload) => this._onIntent(name, payload);
+
+    // 点击画布 = 请求指针锁定 + 拉起音频。
+    // 这是"鼠标不跟随"的兜底：菜单按钮点击时的手势可能不被浏览器认作画布手势，
+    // 这里保证玩家在游戏画面上点一下就能恢复鼠标控制。
+    this.canvas.addEventListener('click', () => {
+      this._ensureAudio();
+      if (this._playing && !this.paused && !Input.pointerLocked) this._requestPointerLockWithRetry();
+    });
+    // 指针锁定状态变化：浏览器会优先消费 Esc，真实环境里不保证页面能收到
+    // Escape keydown。因此非预期丢失锁定时必须直接进入设置菜单。
+    document.addEventListener('pointerlockchange', () => {
+      if (Input.pointerLocked && this._pointerRelockTimer) {
+        clearTimeout(this._pointerRelockTimer);
+        this._pointerRelockTimer = 0;
+      }
+      if (!Input.pointerLocked && this._playing && !this.paused && !this.menuKind &&
+          !this._upgradeOpen && !this.automation) {
+        this.openMenuPanel('settings', { freeze: true });
+      }
+      this._syncMenuState();
+    });
+    document.addEventListener('pointerlockerror', () => {
+      this._syncMenuState();
+      if (this.hud) {
+        this.hud.toast('无法锁定鼠标', '请点击游戏画面，或检查浏览器权限设置', 'warn');
+      }
+    });
+    // 非独立窗口中，浏览器可能先用 Esc 退出网页全屏且吞掉 keydown。
+    // 监听全屏退出，仍然把玩家送进设置；独立 app 窗口不使用网页全屏，不会缩窗。
+    document.addEventListener('fullscreenchange', () => {
+      if (!document.fullscreenElement && this.settings.autoFullscreen !== false &&
+          this._playing && !this.paused && !this.menuKind && !this._upgradeOpen && !this.automation) {
+        this.openMenuPanel('settings', { freeze: true });
+      }
+    });
+    // 失焦时暂停，避免"离开后还在被打"
+    window.addEventListener('blur', () => {
+      if (this._playing && !this.paused) this._autoPause();
+    });
+
+    this._wireEvents();
+    // 等待外部模型导入完成，这样 init() 返回时场景已完整（也让无头自测有确定的时机）
+    this._modelPromise = this._loadModelManifest();
+    try { await this._modelPromise; } catch (_e) { /* 导入失败不影响启动 */ }
+
+    // 生成首帧，置 ready
+    this.renderFrame(0);
+    this._ready = true;
+    this.hud.hideLoading();
+    this._feedBriefing();
+    this.hud.showMenu('main');
+    return this;
+  }
+
+  _loadSettings() {
+    const saved = Save.loadSettings();
+    const settings = {
+      sensitivity: 0.0012,
+      sniperSensitivity: 0.35,
+      fov: CFG.render.fovDeg,
+      volume: CFG.audio.master,
+      invertY: false,
+      fpsCap: 0,
+      quality: 'high',
+      autoFullscreen: true,   // 开始远征时自动全屏，规避 Ctrl+W 等浏览器保留快捷键
+      ...(saved || {}),
+    };
+    // 旧版 UI 把 0.2~10 直接当弧度/像素保存，导致最低档也快得不可用。
+    if (!Number.isFinite(settings.sensitivity) || settings.sensitivity > 0.02) {
+      settings.sensitivity = 0.0012;
+    }
+    // 狙击镜独立灵敏度倍率（4× 镜默认 35%），兼容旧存档中缺失/越界值。
+    if (!Number.isFinite(settings.sniperSensitivity)
+      || settings.sniperSensitivity < 0.05 || settings.sniperSensitivity > 1) {
+      settings.sniperSensitivity = 0.35;
+    }
+    return settings;
+  }
+
+  applySettings(s) {
+    const st = s || this.settings;
+    Input.setSensitivity(st.sensitivity);
+    Input.setSniperSensitivity(st.sniperSensitivity);
+    Input.setInvertY(st.invertY);
+    CFG.render.fovDeg = st.fov;
+    CFG.audio.master = st.volume;
+    Audio.setMaster(st.volume);
+    CFG.render.targetFpsCap = st.fpsCap;
+    CFG.render.maxPixelRatio = st.quality === 'low' ? 1.0 : (st.quality === 'medium' ? 1.25 : 1.5);
+    Save.saveSettings(st);
+  }
+
+  async _loadModelManifest() {
+    // 外部模型导入通道：public/models/manifest.json 可把 glb 放进场景
+    try {
+      const res = await fetch('public/models/manifest.json', { cache: 'no-cache' });
+      if (!res.ok) return;
+      const manifest = await res.json();
+      const visuals = manifest.visuals || [];
+      for (const entry of visuals) {
+        try {
+          const doc = await loadGLTF('public/models/' + entry.file);
+          for (const placement of (entry.placements || [])) {
+            this.world.importVisual(doc, {
+              ...placement,
+              id: entry.id,
+              collision: entry.collision || { mode: 'none' },
+            }, gltfInstanceModels, this.engine);
+          }
+        } catch (err) {
+          recordError('模型导入失败 ' + entry.file + ': ' + (err && err.message), err && err.stack);
+        }
+      }
+    } catch (_e) {
+      // 没有 manifest 是正常情况
+    }
+  }
+
+  _wireEvents() {
+    const on = (type, fn) => this._events.push(Events.on(type, fn));
+
+    on('audio:play', (p) => {
+      if (p.pos) Audio.playAt(p.name, p.pos, this.player.eyePos, { gain: p.gain });
+      else Audio.play(p.name, { gain: p.gain, rate: p.rate });
+    });
+    on('fx:shake', (p) => this.shake.add(p.amount, p.time));
+    on('fx:hitmarker', (p) => {
+      if (this.hud) this.hud.flashHitmarker(p.kill ? 'kill' : 'normal');
+    });
+    on('hit:enemy', (p) => {
+      if (!this.hud) return;
+      // 只打在护盾上的“头部命中”不应伪装成爆头；只有实际扣到生命时
+      // 才显示爆头颜色/样式，避免护盾受击和肉体受击反馈混淆。
+      const fleshHeadshot = !!p.headshot && (!p.shieldHit || (p.healthDamage || 0) > 0);
+      this.hud.flashHitmarker(p.kill ? 'kill' : (fleshHeadshot ? 'headshot' : 'normal'));
+      this.hud.addDamageNumber(Math.round(p.damage), fleshHeadshot, p.point);
+      this.hud.trackEnemy(p.enemy);
+      // 空间化碰撞声由 EnemySystem 在命中位置播放；这里叠加不受距离衰减的
+      // 玩家确认层，保证打盾、破盾、打肉在远距离也能立即区分。
+      if (p.shieldHit) Audio.play('feedback_shield', { gain: 0.82 });
+      if (p.shieldBreak) Audio.play('feedback_shield_break', { gain: 1.0 });
+      if ((p.healthDamage || 0) > 0) Audio.play('feedback_flesh', { gain: fleshHeadshot ? 0.94 : 0.82, rate: fleshHeadshot ? 1.10 : 1 });
+      if (p.kill) this.hud.addKill(this._killFeedText(p.enemy, fleshHeadshot), fleshHeadshot ? 'headshot' : 'normal');
+    });
+    on('hit:world', (p) => {
+      if (this.particles) this.particles.emitBurst(p.point, p.normal, 'impact', {});
+      if (this.decals) this.decals.add(p.point, p.normal, { kind: 'bullet' });
+    });
+    on('player:land', (p) => {
+      if (this.particles) {
+        this.particles.emitBurst(
+          [this.player.pos[0], this.player.pos[1] + 0.05, this.player.pos[2]],
+          [0, 1, 0], 'land', { impact: p.speed });
+      }
+    });
+    on('player:slide', (p) => {
+      this._sliding = p.start;
+      if (p.start) Audio.play('slide_loop', { loop: true, gain: 0.55 });
+      else Audio.stopLoop('slide_loop');
+    });
+    on('player:wallrun', (p) => {
+      this._wallrunning = p.start;
+      if (p.start) Audio.play('wallrun_loop', { loop: true, gain: 0.48 });
+      else Audio.stopLoop('wallrun_loop');
+    });
+    on('player:sprint', (p) => {
+      if (p.start) Audio.play('sprint_loop', { loop: true, gain: 0.34 });
+      else Audio.stopLoop('sprint_loop');
+    });
+    on('player:wallclimb', (p) => {
+      if (p.start) Audio.play('wallclimb_loop', { loop: true, gain: 0.38 });
+      else Audio.stopLoop('wallclimb_loop');
+    });
+    on('player:grapple', (p) => {
+      if (p.start) Audio.play('grapple_loop', { loop: true, gain: 0.44 });
+      else Audio.stopLoop('grapple_loop');
+    });
+    on('player:hurt', (p) => this.shake.add(0.25 + Math.min(0.5, p.amount / 60), 0.24));
+    on('player:die', () => this._handleDeath());
+    // 敌人死亡不生成烟雾爆发，避免遮挡正在交火的后方目标。
+    on('objective:progress', (p) => {
+      if (this.hud) this.hud.setObjective(p.label, p.done, p.total);
+    });
+    on('objective:complete', (p) => {
+      if (this.hud) this.hud.toast('目标完成', p.label, 'good');
+    });
+    on('ui:message', (p) => {
+      if (this.hud) this.hud.toast(p.title, p.sub, p.kind || 'info');
+    });
+    on('upgrade:offer', (p) => {
+      if (this.hud && this._upgradeOpen) this.hud.showUpgradePanel(p.offers, this.upgrades.alloy);
+    });
+    on('run:end', (p) => this._onRunEnd(p));
+  }
+
+  _killFeedText(enemy, headshot) {
+    const t = ENEMY_TYPES[enemy.typeId];
+    const name = t ? t.nameCN : '敌军';
+    return headshot ? `爆头击毁 ${name}` : `击毁 ${name}`;
+  }
+
+  _onEnemyKill(enemy, headshot) {
+    const mods = this.player.mods.move;
+    // 击杀类改件效果
+    if (mods.dashResetOnKillAdd) this.player.refreshAirAbilities();
+    if (mods.lifestealOnKillAdd) this.player.heal(mods.lifestealOnKillAdd);
+    if (headshot && mods.healOnHeadshotKillAdd) this.player.heal(mods.healOnHeadshotKillAdd);
+    if (this._sliding && mods.healthOnSlideKillAdd) this.player.heal(mods.healthOnSlideKillAdd);
+    if (this.inventory) this.inventory.spawnEnemyDrop(enemy, this.world);
+    Audio.play('kill_confirm', { gain: 0.95 });
+  }
+
+  /** 载入任务（地图 + 难度层） */
+  loadMission(index, opts) {
+    const o = opts || {};
+    this.mapIndex = Math.max(0, index | 0);
+    const mission = getMission(this.mapIndex) || MISSIONS[0];
+    this.tier = mission.tier || 1;
+    const seed = (mission.seedBase || 1000) + (this.meta.stats.runs * 7919);
+    this.mapSeed = seed;
+    const mapData = generateMap({
+      seed,
+      biome: mission.biome,
+      archetype: mission.archetype,
+      size: 320,
+      tier: this.tier,
+    });
+    this.mapName = mapData.name || mission.title;
+    this.world.load(mapData);
+    if (this.inventory) this.inventory.reset(this.world, seed);
+    this._spawnCache = null;   // 换图必须重算出生点
+    const biome = getBiome(mission.biome) || BIOMES.industrial_forge;
+    this.biome = biome;
+    if (this.engine && biome && biome.palette) {
+      // 地图 lighting 优先，缺失字段用生物群系调色板补齐
+      const L = mapData.lighting || {};
+      const pal = biome.palette;
+      const vec = (a, b) => new Float32Array(a || b);
+      this.engine.setLighting({
+        sunDir: vec(L.sunDir, [-0.42, -0.82, -0.36]),
+        sunColor: vec(L.sunColor, pal.sun),
+        ambient: vec(L.ambient, pal.ambient),
+        // 半球环境光的"地面反弹"用 ground，阴影里所以偏暖
+        fill: vec(L.groundColor, pal.ground),
+        fogColor: vec(L.fogColor, pal.fog),
+        fogRange: [L.fogNear == null ? 80 : L.fogNear, L.fogFar == null ? 420 : L.fogFar],
+        clearColor: vec(L.skyColor, pal.sky),
+      });
+      // 生物群系重力系数（深核/轨道站可以更"重"或更"轻"）
+      CFG.move.gravity = 22.0 * (biome.gravityScale || 1);
+    }
+    if (this.run) this.run.gravityScale = biome ? (biome.gravityScale || 1) : 1;
+    if (!o.initial && this.player) {
+      this.player.respawn(this.findSpawn());
+      this.enemies.clear();
+    } else if (this.player) {
+      // 首次载入也要备好出生点缓存
+      this._spawnCache = this.findSpawn();
+    }
+    return mapData;
+  }
+
+  /**
+   * 取本局的玩家出生点（带缓存）。
+   *
+   * 为什么要缓存：`world.findPlayerSpawn()` 为了找到"真正安全"的位置要做几十次
+   * 射线检测与空间哈希查询。之前它被直接放在每帧/每次重生路径上调用，
+   * 会明显拖慢帧率。现在每张地图只算一次。
+   */
+  findSpawn(index = 0) {
+    if (!this._spawnCache) this._spawnCache = this.world.findPlayerSpawn(index);
+    return this._spawnCache;
+  }
+
+  // ================================================================ 开局/重开
+
+  /**
+   * 请求进入全屏。
+   *
+   * 为什么需要（用户建议）：全屏状态下浏览器会把绝大多数保留快捷键交给页面，
+   * 这是解决"误按 Ctrl+W 直接关掉游戏"的**根本办法** ——
+   * 网页无法拦截 Ctrl+W，但全屏时浏览器本身不会再把它当成关闭标签页。
+   *
+   * 必须由用户手势触发（点击"开始远征"那一下正好满足条件）。
+   * 失败不报错：某些环境/权限下会拒绝，游戏照常运行。
+   */
+  requestFullscreen() {
+    if (this.automation || this.standalone) return false;
+    try {
+      const el = document.documentElement;
+      if (!el || document.fullscreenElement || el.requestFullscreen == null) return false;
+      const r = el.requestFullscreen({ navigationUI: 'hide' });
+      if (r && typeof r.catch === 'function') r.catch(() => { /* 被拒绝就保持窗口模式 */ });
+      return true;
+    } catch (_e) { return false; }
+  }
+
+  /** 退出全屏（返回主菜单时用，避免卡在全屏里） */
+  exitFullscreen() {
+    try {
+      if (document.fullscreenElement && document.exitFullscreen) {
+        const r = document.exitFullscreen();
+        if (r && typeof r.catch === 'function') r.catch(() => {});
+      }
+    } catch (_e) { /* 忽略 */ }
+  }
+
+  startRun() {
+    // 音频：必须在用户手势的同步调用栈里创建/恢复 AudioContext，
+    // 否则浏览器会拒绝，表现为"完全没有音效且不报错"。
+    this._ensureAudio();
+    // 浏览器页模式使用 Fullscreen API；独立 app 窗口已经由启动器自动最大化，
+    // 不能再叠加网页全屏，否则 Esc 会被 Chromium 抢走并把窗口缩小。
+    if (this.settings.autoFullscreen !== false) this.requestFullscreen();
+
+    this.paused = false;
+    this.menuKind = null;
+    this._respawnTimer = 0;
+    this._deadHandled = false;
+    this._upgradeOpen = false;
+    this._resetHealing();
+    Input.setMenuBlocking(false);
+    // 必须同时更新 Game 与 Input 两层状态。过去这里只改 Input，导致真实开始游戏后
+    // this._playing 仍为 false：Esc 被 Chromium 吞掉时 pointerlockchange 兜底也会失效。
+    this.setPlaying(true);
+    if (this.hud) { this.hud.hideMenu(); this.hud.setVisible(true); }
+
+    this.loadMission(this.tier - 1, {});
+    this.player.resetArmorShieldBonus();
+    this.player.respawn(this.findSpawn());
+    this.enemies.clear();
+    this.weapons.resetAmmo();
+    this.weapons.stats.shotsFired = 0;
+    this.weapons.stats.hits = 0;
+    this.weapons.stats.headshots = 0;
+    this.weapons.stats.damageDealt = 0;
+    this.projectilesClear();
+    this.particles.clear();
+    this.decals.clear();
+    this.shake.reset();
+
+    this.upgrades.reset();
+    this.upgrades.alloy = 0;
+    this.upgrades.setTier ? this.upgrades.setTier(this.tier) : null;
+
+    this.run.start(this.tier, this.mapIndex);
+    this.director.start(this.run);
+    this._applyModifiers();
+    this._upgradeOpen = false;
+    if (this.hud) {
+      this.hud.hideUpgradePanel();
+      this.hud.setObjective(this.run.currentObjectiveLabel(), 0, this.run.objectives.length);
+      this.hud.setAlloy(0);
+      this.hud.toast(`第 ${this.tier} 层 · ${this.mapName}`, this.missionBrief(), 'info');
+    }
+    this._requestPointerLockWithRetry();
+    return true;
+  }
+
+  missionBrief() {
+    const m = getMission(this.mapIndex);
+    return m ? m.brief : '工业星际远征 —— 突入并摧毁敌方设施';
+  }
+
+  /** 把剧情背景 + 本局任务简报喂给 HUD 的「远征简报」面板 */
+  _feedBriefing() {
+    if (!this.hud) return;
+    const m = getMission(this.tier - 1) || getMission(0);
+    const biome = getBiome(m ? m.biome : 'industrial_forge') || BIOMES.industrial_forge;
+    this.hud.setBriefing({
+      world: (biome && biome.desc)
+        ? `${biome.name}：${biome.desc}\n钢铁远征舰队把整支锻造舰队开进星系边缘，用星港把行星直接熔成战舰。你是被留在封锁区里的拾荒者，穿着拼装的外骨骼，靠拆解远征军的设备换一条命。`
+        : undefined,
+      mission: m
+        ? `第 ${m.tier} 层 · ${m.title}\n${m.brief}`
+        : undefined,
+      tier: this.tier,
+      biomeName: biome ? biome.name : '',
+      mapName: this.mapName || '',
+      objectives: this.world ? (this.world.objectives() || []).length : 0,
+    });
+  }
+
+  /**
+   * 确保音频可用。刻意设计成"可反复调用、幂等"：
+   *  - 在用户手势里同步创建/恢复 AudioContext
+   *  - 若被浏览器拒绝，注册一次性手势回调，在下一次点击/按键时再试
+   *  - 游戏跑起来之后每帧还会调 Audio.revive() 兜底
+   */
+  _ensureAudio() {
+    try {
+      const p = Audio.init();
+      if (p && typeof p.then === 'function') {
+        p.then(() => {
+          Audio.setMaster(this.settings.volume);
+          Audio.setBus('sfx', CFG.audio.sfx);
+          Audio.setBus('music', CFG.audio.music);
+          Audio.setBus('ui', CFG.audio.ui);
+          if (this.biome) Audio.startAmbient(this.biome.id);
+        }).catch(() => { /* 音频不可用时静默降级 */ });
+      }
+    } catch (_e) { /* 无 WebAudio 环境 */ }
+    // 再挂一次性手势钩子：首次点击/按键时把音频拉起来（幂等，已就绪时是空操作）
+    if (!this._gestureHooked) {
+      this._gestureHooked = true;
+      Input.onGesture(() => {
+        Audio.init().then(() => {
+          Audio.setMaster(this.settings.volume);
+          if (this.biome) Audio.startAmbient(this.biome.id);
+        }).catch(() => {});
+      });
+    }
+  }
+
+  /** 同步菜单期间的鼠标样式；已按产品要求移除指针锁定遮罩。 */
+  _syncMenuState() {
+    // 直接问 HUD 当前是否开着菜单最可靠：paused 与 _menu 在某些路径下并不同步。
+    const hudMenuOpen = !!(this.hud && this.hud._menu);
+    const menuOpen = hudMenuOpen || this.paused || !!this.menuKind || !!this._upgradeOpen
+      || !!(this.inventory && this.inventory.open);
+    const bodyChanged = menuOpen !== this._menuOpenShown;
+    if (!bodyChanged) return;
+    this._menuOpenShown = menuOpen;
+    try {
+      document.body.classList.remove('needs-lock');
+      document.body.classList.toggle('menu-open', !!menuOpen);
+    } catch (_e) { /* 忽略 */ }
+  }
+
+  projectilesClear() {
+    if (this.weapons && this.weapons.projectiles) this.weapons.projectiles.clear();
+  }
+
+  _applyModifiers() {
+    const perkMods = this.meta.perkModifiers();
+    const upMods = this.upgrades ? this.upgrades.modifiers : null;
+    const merged = mergeModifiers(perkMods, upMods);
+    this.player.setModifiers(merged);
+    this.weapons.addModifiers(merged);
+    if (this.run) this.run.setModifiers(merged);
+    return merged;
+  }
+
+  openUpgradePanel() {
+    if (!this.upgrades || !this.hud) return;
+    const rng = M.mulberry32((Date.now() ^ (this.run ? this.run.runId * 7919 : 0)) >>> 0);
+    const offers = this.upgrades.rollOffers(3, rng);
+    this._upgradeOpen = true;
+    this.paused = true;
+    Input.setPlaying(false);
+    Input.setMenuBlocking(true);
+    Input.exitLock();
+    this.hud.showMenu('upgrade');
+    this.hud.showUpgradePanel(offers, this.upgrades.alloy);
+    this.hud.setAlloy(this.upgrades.alloy);
+    this._syncMenuState();
+  }
+
+  /** 关闭可选强化，不消费合金；Esc 与“跳过并继续”按钮共用。 */
+  closeUpgradePanel() {
+    if (!this._upgradeOpen) return false;
+    this._upgradeOpen = false;
+    this.paused = false;
+    if (this.hud) {
+      this.hud.hideUpgradePanel();
+      this.hud.hideMenu();
+    }
+    Input.setMenuBlocking(false);
+    Input.setPlaying(!!this._playing);
+    this._syncMenuState();
+    if (this._playing) this._requestPointerLockWithRetry();
+    return true;
+  }
+
+  /** Tab 背包：冻结世界、释放鼠标，但不占用 HUD 的 Esc 设置菜单状态。 */
+  openBackpack() {
+    if (!this.inventory || !this._playing || this.menuKind || this._upgradeOpen) return false;
+    if (this.healing) {
+      if (this.healing.useActive) this._cancelHealingUse(false);
+      this.healing.wheelOpen = false;
+      this.healing.holdTime = 0;
+      if (this.hud) this.hud.hideHealWheel();
+    }
+    this.paused = true;
+    Input.setPlaying(true);          // 背包内仍阻止 Tab/数字键触发浏览器快捷行为
+    Input.setMenuBlocking(true);
+    Input.exitLock();
+    this.inventory.setOpen(true, this.player);
+    this._syncMenuState();
+    Audio.play('ui_click', { gain: 0.45, rate: 1.08 });
+    return true;
+  }
+
+  closeBackpack() {
+    if (!this.inventory || !this.inventory.open) return false;
+    this.inventory.setOpen(false, this.player);
+    this.paused = false;
+    Input.setMenuBlocking(false);
+    Input.setPlaying(!!this._playing);
+    this._syncMenuState();
+    Audio.play('ui_click', { gain: 0.4, rate: 0.92 });
+    if (this._playing) this._requestPointerLockWithRetry();
+    return true;
+  }
+
+  pickUpgrade(id) {
+    if (!this.upgrades) return false;
+    const ok = this.upgrades.pick(id);
+    if (ok) {
+      this._applyModifiers();
+      const picked = (this.upgrades.owned.slice(-1)[0] || {}).id || id;
+      this.closeUpgradePanel();
+      if (this.hud) {
+        this.hud.toast('改件已安装', picked, 'good');
+      }
+    }
+    return ok;
+  }
+
+  _onIntent(name, payload) {
+    switch (name) {
+      case 'start_run':
+        this.meta.stats.runs++;
+        this.startRun();
+        break;
+      case 'restart':
+      case 'retry':
+        this.meta.stats.runs++;
+        this.retryRun();
+        break;
+      case 'resume':
+      case 'close_menu':
+        if (this._playing) this.closeMenuPanel();
+        else if (this.hud) this.hud.showMenu('main');
+        break;
+      case 'quit_to_menu':
+        if (this.inventory) this.inventory.setOpen(false, this.player);
+        this.setPlaying(false);
+        this.paused = true;
+        this.menuKind = 'main';
+        this._respawnTimer = 0;
+        this.director.stop();
+        if (this.hud) {
+          this.hud.showMenu('main');
+          this.hud.setVisible(false);
+        }
+        Input.exitLock();
+        break;
+      case 'pick_upgrade':
+        this.pickUpgrade(payload && payload.id);
+        break;
+      case 'skip_upgrade':
+        this.closeUpgradePanel();
+        break;
+      case 'reroll_upgrade':
+        if (this.upgrades && this.hud) {
+          const rng = M.mulberry32((Date.now() * 2654435761) >>> 0);
+          const offers = this.upgrades.reroll(rng);
+          this.hud.showUpgradePanel(offers, this.upgrades.alloy);
+        }
+        break;
+      case 'set_sensitivity':
+        this.settings.sensitivity = payload.value;
+        this.applySettings();
+        break;
+      case 'set_sniper_sensitivity':
+        this.settings.sniperSensitivity = payload.value;
+        this.applySettings();
+        break;
+      case 'set_fov':
+        this.settings.fov = payload.value;
+        this.applySettings();
+        break;
+      case 'set_volume':
+        this.settings.volume = payload.value;
+        this.applySettings();
+        break;
+      case 'set_invert_y':
+        this.settings.invertY = payload.value;
+        this.applySettings();
+        break;
+      case 'set_fps_cap':
+        this.settings.fpsCap = payload.value;
+        this.applySettings();
+        break;
+      case 'set_quality':
+        this.settings.quality = payload.value;
+        this.applySettings();
+        this.engine.setSize(this.canvas.clientWidth || window.innerWidth,
+          this.canvas.clientHeight || window.innerHeight, CFG.render.maxPixelRatio);
+        break;
+      case 'set_auto_fullscreen':
+        this.settings.autoFullscreen = !!payload.value;
+        // 立刻生效：打开就进全屏，关掉就退出（全屏可避免 Ctrl+W 等浏览器快捷键误触）
+        if (this.settings.autoFullscreen) this.requestFullscreen();
+        else this.exitFullscreen();
+        break;
+      case 'open_settings':
+        this.hud.showMenu('settings');
+        break;
+      case 'open_help':
+        this.hud.showMenu('help');
+        break;
+      case 'open_credits':
+        this.hud.showMenu('credits');
+        break;
+      case 'open_briefing':
+        this._feedBriefing();
+        this.hud.showMenu('briefing');
+        break;
+      case 'open_main':
+        if (this.hud) this.hud.showMenu('main');
+        break;
+      default:
+        break;
+    }
+  }
+
+  _onRunEnd(p) {
+    const st = p.stats || {};
+    const earned = this.meta.recordRun({
+      extracted: p.extracted,
+      tier: this.tier,
+      kills: st.kills || 0,
+      headshots: st.headshots || 0,
+      time: st.time || 0,
+      alloy: this.run ? this.run.alloy : 0,
+      score: this.run ? this.run.score : 0,
+    });
+    this.director.stop();
+    if (this.inventory) this.inventory.setOpen(false, this.player);
+    this.paused = true;
+    this.menuKind = p.extracted ? 'extract' : 'dead';
+    this.setPlaying(false);
+    Input.exitLock();
+    if (this.hud) {
+      this.hud.setRunStats({
+        kills: st.kills || 0, headshots: st.headshots || 0,
+        damage: Math.round(st.damageDealt || 0), time: st.time || 0,
+        tier: this.tier, alloy: this.run ? this.run.alloy : 0,
+      });
+      this.hud.showMenu(p.extracted ? 'extract' : 'dead');
+      if (p.extracted) this.hud.toast('撤离成功', `获得 ${earned} 远征点数`, 'good');
+      else this.hud.toast('外骨骼失效', '信号中断……', 'warn');
+    }
+    Audio.play(p.extracted ? 'extract_success' : 'player_die');
+    // 阵亡时也起自动重生倒计时，避免卡在结算界面
+    if (!p.extracted) this._respawnTimer = 12;
+  }
+
+  // ================================================================ 循环
+
+  start() {
+    if (this.running) return;
+    this.running = true;
+    this.lastTime = performance.now();
+    requestAnimationFrame(this._boundFrame);
+  }
+
+  stop() {
+    this.running = false;
+    this._stopHealingAudio();
+  }
+
+  /**
+   * 打开菜单面板。游戏内菜单默认真正暂停并释放鼠标，行为与 Apex 一致。
+   */
+  openMenuPanel(kind, opts) {
+    const o = opts || {};
+    if (this.menuKind === kind) return false;
+    if (this.inventory && this.inventory.open) this.inventory.setOpen(false, this.player);
+    if (this.healing) {
+      if (this.healing.useActive) this._cancelHealingUse(false);
+      this.healing.wheelOpen = false;
+      this.healing.holdTime = 0;
+      if (this.hud && typeof this.hud.hideHealWheel === 'function') this.hud.hideHealWheel();
+    }
+    this.menuKind = kind;
+    this._menuFreeze = o.freeze !== false;
+    this.paused = this._menuFreeze;
+    Input.setPlaying(false);
+    Input.setMenuBlocking(true);      // 关键：菜单期间屏蔽移动/开火等游戏动作
+    Input.exitLock();
+    if (this.hud) this.hud.showMenu(kind);
+    this._syncMenuState();
+    return true;
+  }
+
+  /** 关闭菜单面板并恢复操作 */
+  closeMenuPanel() {
+    if (!this.menuKind) return false;
+    this.menuKind = null;
+    this.paused = false;
+    this._menuFreeze = false;
+    Input.setMenuBlocking(false);
+    Input.setPlaying(!!this._playing);
+    if (this.hud) this.hud.hideMenu();
+    this._syncMenuState();
+    if (this._playing) {
+      if (this.settings.autoFullscreen !== false && !document.fullscreenElement) this.requestFullscreen();
+      this._requestPointerLockWithRetry();
+    }
+    return true;
+  }
+
+  /** Esc：游玩中直接打开设置；已在菜单里则关闭 */
+  togglePauseMenu() {
+    if (this.menuKind) return this.closeMenuPanel();
+    if (!this.player || !this._playing) return false;
+    return this.openMenuPanel('settings', { freeze: true });
+  }
+
+  /** 冻结式暂停（失焦时用） */
+  pauseGame(freeze) {
+    if (this.menuKind) return false;
+    return this.openMenuPanel('pause', { freeze: freeze !== false });
+  }
+
+  /** 窗口失焦时自动冻结（否则玩家切出去后会在后台被打死） */
+  _autoPause() {
+    if (!this._playing || this.paused || this.menuKind) return;
+    this.pauseGame(true);
+  }
+
+  /**
+   * 游玩中的全局按键处理。
+   *
+   * Esc 语义：
+   *   · 游玩中按 Esc → 暂停、释放鼠标并直接打开设置
+   *   · 菜单中按 Esc → 关闭菜单回到游玩
+   *   · 菜单里「设置」= 鼠标灵敏度 / FOV / 音量 / Y 轴反转 / 帧率上限 / 画质
+   *   · 游玩中按 Tab → 直接打开设置面板（快捷键入口）
+   *
+   * 注意：这里**不再用 `_playing` 做前置条件** —— 早期版本在"继续游戏"等
+   * 进入路径下 `_playing` 可能为假，导致 Esc 完全没反应。
+   */
+  _handleGlobalKeys() {
+    if (Input.actionPressed('pause')) {
+      // 背包优先消费 Esc：只关闭背包，不在其背后再打开设置菜单。
+      if (this.inventory && this.inventory.open) {
+        this.closeBackpack();
+        return;
+      }
+      // 强化货架是可选内容；无论有没有合金，Esc 都必须先关闭它并继续游戏，
+      // 不能在其背后再打开设置菜单造成双层弹窗软锁。
+      if (this._upgradeOpen) {
+        this.closeUpgradePanel();
+        return;
+      }
+      if (this._playing && this.player && this.menuKind !== 'dead' && this.menuKind !== 'extract') {
+        this.togglePauseMenu();
+      } else if (!this._playing && this.hud && this.hud._menu && this.hud._menu !== 'main') {
+        this.hud.showMenu('main');
+      }
+      return;
+    }
+    if (Input.pressed('Tab') && this.player && this._playing) {
+      if (this.inventory && this.inventory.open) this.closeBackpack();
+      else if (!this.menuKind && !this._upgradeOpen) this.openBackpack();
+      return;
+    }
+    // F3：调试面板
+    if (Input.pressed('F3') && this.hud) {
+      this.debugFlags.showOverlay = !this.debugFlags.showOverlay;
+      this.hud.setDebugPanelVisible(this.debugFlags.showOverlay);
+    }
+  }
+
+  /** 由 HUD 的按钮/菜单触发：开始游玩时的统一状态切换 */
+  setPlaying(b) {
+    this._playing = !!b;
+    Input.setPlaying(this._playing);
+  }
+
+  /**
+   * 玩家阵亡后的重生流程。
+   * 之前只弹了菜单、没有真正的重生入口，玩家会卡在死亡状态里出不去。
+   */
+  retryRun() {
+    if (this._respawnTimer > 0 || !this.player) {
+      // 正常路径
+    }
+    this.player.respawn(this.findSpawn());
+    this.player.health = this.player.maxHealth;
+    this.player.shield = this.player.maxShield;
+    this.enemies.clear();
+    this.weapons.resetAmmo();
+    if (this.inventory) this.inventory.reset(this.world, (this.mapSeed || 1) ^ Date.now());
+    this._resetHealing();
+    this.particles.clear();
+    this.decals.clear();
+    this.shake.reset();
+    this.run.start(this.tier, this.mapIndex);
+    this.director.start(this.run);
+    this._respawnTimer = 0;
+    this._deadHandled = false;
+    this.paused = false;
+    this.menuKind = null;
+    if (this.hud) {
+      this.hud.hideMenu();
+      this.hud.setVisible(true);
+      this.hud.toast('外骨骼已重启', `第 ${this.tier} 层 · ${this.mapName}`, 'info');
+    }
+    this.setPlaying(true);
+    Input.setMenuBlocking(false);
+    this._requestPointerLockWithRetry();
+  }
+
+  /**
+   * 返回游戏时先立即锁鼠标；若浏览器这次请求没有生效，1 秒后在游戏仍可操作且
+   * 指针仍未锁定的前提下自动补发一次。菜单/背包重新打开后回调会自行失效。
+   */
+  _requestPointerLockWithRetry() {
+    if (!this._playing || this.paused || this.menuKind || this._upgradeOpen
+      || (this.inventory && this.inventory.open)) return false;
+    const requested = Input.requestLock();
+    if (this._pointerRelockTimer) clearTimeout(this._pointerRelockTimer);
+    this._pointerRelockTimer = setTimeout(() => {
+      this._pointerRelockTimer = 0;
+      if (this._playing && !this.paused && !this.menuKind && !this._upgradeOpen
+        && !(this.inventory && this.inventory.open) && !Input.pointerLocked) {
+        Input.requestLock();
+      }
+    }, 1000);
+    return requested;
+  }
+
+  /** 重置本局治疗资源与轮盘状态。 */
+  _resetHealing() {
+    this._stopHealingAudio();
+    if (!this.healing) {
+      this.healing = {
+        medkits: Infinity, shieldBatteries: Infinity, syringes: Infinity, shieldCells: Infinity,
+        wheelOpen: false, selection: 0, holdTime: 0,
+        useActive: false, useItem: 0, useT: 0, useDuration: 0,
+      };
+    } else {
+      this.healing.shieldBatteries = Infinity;
+      this.healing.medkits = Infinity;
+      this.healing.syringes = Infinity;
+      this.healing.shieldCells = Infinity;
+      this.healing.wheelOpen = false;
+      this.healing.selection = 0;
+      this.healing.holdTime = 0;
+      this.healing.useActive = false;
+      this.healing.useItem = 0;
+      this.healing.useT = 0;
+      this.healing.useDuration = 0;
+    }
+    if (this.hud && typeof this.hud.hideHealWheel === 'function') this.hud.hideHealWheel();
+  }
+
+  _stopHealingAudio() {
+    for (const def of HEALING_DEFS) Audio.stopLoop(def.loopSound);
+  }
+
+  _cancelHealingUse(showToast = true) {
+    const h = this.healing;
+    if (!h || !h.useActive) { this._stopHealingAudio(); return false; }
+    h.useActive = false;
+    h.useT = 0;
+    h.useDuration = 0;
+    this._stopHealingAudio();
+    if (showToast && this.hud) this.hud.toast('使用取消', '切枪、换弹、开火或开镜打断了治疗', 'warn');
+    return true;
+  }
+
+  /** 返回轮盘当前选中的道具；轻按 5 不再根据“残血/缺盾”偷偷切换。 */
+  _defaultHealingSelection() {
+    const h = this.healing;
+    if (!h) return 0;
+    // 选择状态由长按轮盘/左右拨动/数字键显式改变，并在本局持续保留。
+    // 这样玩家已经选中电池时，即使生命值见底，轻按 5 仍会使用电池，
+    // 不会被“智能”逻辑抢走输入；目标已满时则正常提示无法使用。
+    return Math.max(0, Math.min(HEALING_DEFS.length - 1, h.selection | 0));
+  }
+
+  /** 使用一个治疗道具；返回是否真的消耗了资源。 */
+  _useHealingItem(index) {
+    const p = this.player;
+    const h = this.healing;
+    if (!p || !h || !p.alive) return false;
+    const def = HEALING_DEFS[Math.max(0, Math.min(HEALING_DEFS.length - 1, index | 0))];
+    const stock = h[def.key];
+    const before = def.target === 'health' ? p.health : p.shield;
+    const max = def.target === 'health' ? p.maxHealth : p.maxShield;
+    if (!(stock > 0) || before >= max - 0.01) {
+      if (this.hud) this.hud.toast('无法使用', `${def.target === 'health' ? '生命值' : '护盾'}已满或没有${def.name}`, 'warn');
+      return false;
+    }
+    if (Number.isFinite(stock)) h[def.key] = Math.max(0, stock - 1);
+    const amount = Number.isFinite(def.amount) ? def.amount : max;
+    if (def.target === 'health') p.heal(amount);
+    else p.addShield(amount);
+    const after = def.target === 'health' ? p.health : p.shield;
+    const restored = Math.max(0, Math.round(after - before));
+    const remain = Number.isFinite(h[def.key]) ? h[def.key] : '∞';
+    if (this.hud) this.hud.toast(def.name, `${def.target === 'health' ? '生命' : '护盾'} +${restored} · 剩余 ${remain}`, 'good');
+    Events.emit('audio:play', { name: def.completeSound, gain: 1.0 });
+    Events.emit('ui:message', { title: `${def.name}已使用`, sub: `${def.target === 'health' ? '生命' : '护盾'}恢复至 ${Math.round(after)}`, kind: 'good' });
+    return true;
+  }
+
+  /** 开始使用道具，完成前只减速不改变生命/护盾。 */
+  _startHealingUse(index) {
+    const p = this.player;
+    const h = this.healing;
+    if (!p || !h || !p.alive) return false;
+    const safeIndex = Math.max(0, Math.min(HEALING_DEFS.length - 1, index | 0));
+    const def = HEALING_DEFS[safeIndex];
+    const current = def.target === 'health' ? p.health : p.shield;
+    const max = def.target === 'health' ? p.maxHealth : p.maxShield;
+    const valid = h[def.key] > 0 && current < max - 0.01;
+    if (!valid) {
+      if (this.hud) this.hud.toast('无法使用', `${def.target === 'health' ? '生命值' : '护盾'}已满`, 'warn');
+      return false;
+    }
+    h.useActive = true;
+    h.useItem = safeIndex;
+    h.useT = 0;
+    h.useDuration = def.duration;
+    // 读条一开始就给出明确的听觉反馈（被打断时玩家也能知道正在使用）。
+    Events.emit('audio:play', {
+      name: def.startSound, gain: def.id === 'medkit' ? 1.45 : 1.05,
+    });
+    this._stopHealingAudio();
+    Audio.play(def.loopSound, {
+      loop: true, gain: def.id === 'medkit' ? 1.25 : (def.target === 'shield' ? 0.92 : 0.98),
+    });
+    if (this.hud) this.hud.toast(`正在使用${def.name}`, `${def.duration.toFixed(1)} 秒读条 · 完成前移动速度降低`, 'info');
+    return true;
+  }
+
+  /** 处理 5 键轻按/长按与轮盘选择。必须在 Player.step 前调用，避免轮盘期间移动视角。 */
+  _updateHealingInput(dt, input) {
+    const h = this.healing;
+    if (!h || !input) return;
+
+    // 读条期间再次按 5 不叠加第二个道具；开火/开镜会取消当前读条。
+    if (h.useActive) {
+      if (input.fire || input.ads || input.slot1Pressed || input.slot2Pressed
+        || input.slot3Pressed || input.slot4Pressed || input.swapPressed || input.reloadPressed) {
+        this._cancelHealingUse(true);
+      } else {
+        h.useT += dt;
+        input.moveX *= 0.35;
+        input.moveY *= 0.35;
+        if (h.useT >= h.useDuration) {
+          this._stopHealingAudio();
+          this._useHealingItem(h.useItem);
+          h.useActive = false;
+          h.useT = 0;
+          h.useDuration = 0;
+        }
+      }
+      return;
+    }
+
+    if (input.healPressed) {
+      h.holdTime = 0;
+      h.wheelOpen = false;
+      h.selection = this._defaultHealingSelection();
+    }
+    if (input.healDown) {
+      h.holdTime += dt;
+      // 0.28s 是“轻按使用”和“长按轮盘”的分界，接近 Apex 的手感。
+      if (h.holdTime >= 0.28) h.wheelOpen = true;
+      if (h.wheelOpen) {
+        // 轮盘期间允许 1~4 直接点选，也支持鼠标沿四个方向快速拨动选择。
+        if (input.slot1Pressed) h.selection = 0;
+        if (input.slot2Pressed) h.selection = 1;
+        if (input.slot3Pressed) h.selection = 2;
+        if (input.slot4Pressed) h.selection = 3;
+        // 低灵敏度下单个像素也要能立即换项，避免左右拨动感觉迟钝。
+        // 轮盘选择必须看“鼠标在屏幕上的原始位移”，不能复用 lookX：lookX
+        // 为了符合镜头控制已经做过一次水平反向，直接拿它会把左右手势翻转。
+        // movementX < 0 就是鼠标左移（医疗包在左侧），> 0 就是右移（电池）。
+        const wheelDx = Input.mouseDX;
+        const wheelDy = Input.mouseDY;
+        if (Math.max(Math.abs(wheelDx), Math.abs(wheelDy)) > 0.4) {
+          if (Math.abs(wheelDx) >= Math.abs(wheelDy)) h.selection = wheelDx < 0 ? 0 : 1;
+          else h.selection = wheelDy < 0 ? 2 : 3;
+        }
+        // 数字键仅用于轮盘选项，不能同时触发切枪。
+        input.slot1Pressed = false; input.slot2Pressed = false; input.slot3Pressed = false; input.slot4Pressed = false;
+        input.swapPressed = false;
+        input.moveX = 0; input.moveY = 0;
+        input.lookX = 0; input.lookY = 0;
+      }
+      if (this.hud && h.wheelOpen) this.hud.showHealWheel(h.selection, h);
+    } else if (input.healReleased) {
+      // 轻按开始自动选择；长按松开开始使用轮盘当前选择。读条完成前不改变资源。
+      this._startHealingUse(h.wheelOpen ? h.selection : this._defaultHealingSelection());
+      h.wheelOpen = false;
+      h.holdTime = 0;
+      if (this.hud) this.hud.hideHealWheel();
+    }
+
+  }
+
+  /** 阵亡后的收尾：弹结算菜单 + 起倒计时自动重生 */
+  _handleDeath() {
+    if (this._deadHandled) return;
+    this._deadHandled = true;
+    this._cancelHealingUse(false);
+    if (this.inventory) this.inventory.setOpen(false, this.player);
+    this.director.stop();
+    this.paused = true;
+    this.menuKind = 'dead';
+    this.setPlaying(false);       // 菜单里要让浏览器快捷键恢复工作
+    Input.exitLock();
+    if (this.hud) {
+      const st = this.run ? this.run.stats : {};
+      this.hud.setRunStats({
+        kills: st.kills || 0, headshots: st.headshots || 0,
+        damage: Math.round(st.damageDealt || 0), time: st.time || 0,
+        tier: this.tier, alloy: this.run ? this.run.alloy : 0,
+      });
+      this.hud.showMenu('dead');
+    }
+    // 12 秒后自动重开，避免玩家以为游戏卡死
+    this._respawnTimer = 12;
+  }
+
+  frame(now) {
+    if (!this.running) return;
+    requestAnimationFrame(this._boundFrame);
+
+    const nowMs = typeof now === 'number' ? now : performance.now();
+    let dt = (nowMs - this.lastTime) / 1000;
+    this.lastTime = nowMs;
+    if (!isFinite(dt) || dt < 0) dt = 0;
+    // 单帧最大 0.25 秒，避免切标签回来一次性跑爆物理
+    if (dt > 0.25) dt = 0.25;
+
+    // Esc 必须在 paused 早退之前处理，否则打开菜单后永远收不到第二次 Esc。
+    this._handleGlobalKeys();
+
+    if (this.paused) {
+      // 暂停时仍然渲染（菜单背景），但不推进物理。
+      // 同时同步 body 类名，让菜单期间恢复系统光标。
+      this._syncMenuState();
+      this.renderFrame(dt);
+      Input.endFrame();
+      return;
+    }
+
+    this.elapsed += dt;
+
+    // 全局按键已在暂停判定前处理。
+    void this.menuKind;
+
+    // 阵亡后的自动重生倒计时（同时刷新 HUD 上的倒计时显示）
+    if (this._respawnTimer > 0) {
+      this._respawnTimer -= dt;
+      if (this.hud && this.hud.setExtraction) {
+        this.hud.setExtraction(Math.max(0, this._respawnTimer));
+      }
+      if (this._respawnTimer <= 0) {
+        this._respawnTimer = 0;
+        this.retryRun();
+        Input.endFrame();
+        return;
+      }
+      this.renderFrame(dt);
+      Input.endFrame();
+      return;
+    }
+
+    // 音频保活：上下文可能因浏览器策略停在 suspended（表现为完全没声音）
+    if ((this.frameCount & 31) === 0) {
+      try { Audio.revive(); } catch (_e) { /* 忽略 */ }
+    }
+    this._syncMenuState();
+
+    // 慢动作
+    if (this.slowmoTimer > 0) {
+      this.slowmoTimer -= dt;
+      this.timeScale = this.slowmoScale;
+      if (this.slowmoTimer <= 0) this.timeScale = 1;
+    } else if (CFG.debug.slowMotion > 0) {
+      this.timeScale = CFG.debug.slowMotion;
+    } else {
+      this.timeScale = 1;
+    }
+
+    const scaledDt = dt * this.timeScale;
+
+    // ---- 固定步物理
+    // 视角增量按"本帧实际执行的物理步数"均摊，保证不同帧率下转头速度一致。
+    this.accumulator += scaledDt;
+    const inputState = this.readInput();
+    const pendingLookX = inputState.lookX;
+    const pendingLookY = inputState.lookY;
+    const planSteps = Math.min(MAX_STEPS_PER_FRAME, Math.floor(this.accumulator / PHYS_DT));
+    const lookPerStepX = planSteps > 0 ? pendingLookX / planSteps : 0;
+    const lookPerStepY = planSteps > 0 ? pendingLookY / planSteps : 0;
+    inputState.lookX = 0;
+    inputState.lookY = 0;
+
+    let steps = 0;
+    while (this.accumulator >= PHYS_DT && steps < MAX_STEPS_PER_FRAME) {
+      inputState.lookX = lookPerStepX;
+      inputState.lookY = lookPerStepY;
+      this.stepPhysics(PHYS_DT, inputState);
+      this.accumulator -= PHYS_DT;
+      steps++;
+    }
+    if (steps >= MAX_STEPS_PER_FRAME) this.accumulator = 0;
+
+    // ---- 渲染帧
+    this.renderFrame(dt);
+    // 固定步频低于显示刷新率时，某些渲染帧可能还没有物理步（例如 240Hz
+    // 显示器上的每隔一帧）。不能在这里清掉 justPressed/鼠标增量，否则 1/2/3
+    // 切枪、R 换弹等边沿动作会随机丢失，玩家就会感觉“要按好几下才切上”。
+    // 等下一帧真正执行物理步后再统一清理；暂停/重生分支仍按原逻辑清理。
+    if (steps > 0) Input.endFrame();
+    this.frameCount++;
+  }
+
+  /** 读取一份输入快照（本帧所有物理步共用，保证手感一致） */
+  readInput() {
+    const sens = Input.sensitivity;
+    const currentDef = this.weapons && this.weapons.current && this.weapons.current.def;
+    // 仅对狙击镜 ADS 降低视角灵敏度；普通枪/腰射保持全局灵敏度。
+    const lookMul = currentDef && currentDef.class === 'sniper' && Input.actionDown('ads')
+      ? Input.sniperSensitivity : 1;
+    const dy = Input.invertY ? -Input.mouseDY : Input.mouseDY;
+    const lookSteps = 1;
+    const inp = this._inp || (this._inp = {
+      moveX: 0, moveY: 0, jump: false, jumpPressed: false, jumpReleased: false,
+      crouch: false, crouchPressed: false, sprint: false, fire: false, ads: false,
+      reloadPressed: false, chargeDown: false, chargePressed: false, chargeReleased: false,
+      dashPressed: false, grappleDown: false, grapplePressed: false,
+      lookX: 0, lookY: 0, swapPressed: false, slot1Pressed: false, slot2Pressed: false, slot3Pressed: false, slot4Pressed: false,
+      interactPressed: false, interactDown: false, healDown: false, healPressed: false, healReleased: false,
+    });
+    inp.moveX = (Input.actionDown('right') ? 1 : 0) - (Input.actionDown('left') ? 1 : 0);
+    inp.moveY = (Input.actionDown('forward') ? 1 : 0) - (Input.actionDown('back') ? 1 : 0);
+    inp.jump = Input.actionDown('jump');
+    inp.jumpPressed = Input.actionPressed('jump');
+    inp.jumpReleased = Input.actionReleased('jump');
+    inp.crouch = Input.actionDown('crouch');
+    inp.crouchPressed = Input.actionPressed('crouch');
+    inp.sprint = Input.actionDown('sprint');
+    inp.fire = Input.actionDown('fire');
+    inp.ads = Input.actionDown('ads');
+    inp.reloadPressed = Input.actionPressed('reload');
+    inp.chargeDown = Input.actionDown('charge');
+    inp.chargePressed = Input.actionPressed('charge');
+    inp.chargeReleased = Input.actionReleased('charge');
+    inp.dashPressed = Input.actionPressed('dash');
+    inp.grappleDown = Input.actionDown('grapple');
+    inp.grapplePressed = Input.actionPressed('grapple');
+    inp.swapPressed = Input.actionPressed('swap') || Input.wheel !== 0;
+    inp.slot1Pressed = Input.actionPressed('weapon1');
+    inp.slot2Pressed = Input.actionPressed('weapon2');
+    inp.slot3Pressed = Input.actionPressed('weapon3');
+    inp.slot4Pressed = Input.actionPressed('weapon4');
+    inp.interactDown = Input.actionDown('interact');
+    inp.interactPressed = Input.actionPressed('interact');
+    inp.healDown = Input.actionDown('heal');
+    inp.healPressed = Input.actionPressed('heal');
+    inp.healReleased = Input.actionReleased('heal');
+    // 鼠标增量在固定步内被消费一次（逐步分摊到物理步）
+    inp.lookX = -Input.mouseDX * sens * lookMul * lookSteps;
+    // DOM movementY：向下为正；Player.look 的正 dy 表示向下看，所以这里不取反。
+    inp.lookY = dy * sens * lookMul * lookSteps;
+    if (Input.menuBlocking) {
+      inp.moveX = 0; inp.moveY = 0;
+      inp.jump = false; inp.jumpPressed = false; inp.jumpReleased = false;
+      inp.crouch = false; inp.crouchPressed = false; inp.sprint = false;
+      inp.fire = false; inp.ads = false; inp.reloadPressed = false;
+      inp.chargeDown = false; inp.chargePressed = false; inp.chargeReleased = false;
+      inp.dashPressed = false;
+      inp.grappleDown = false; inp.grapplePressed = false; inp.swapPressed = false;
+      inp.slot1Pressed = false; inp.slot2Pressed = false; inp.slot3Pressed = false; inp.slot4Pressed = false;
+      inp.interactDown = false; inp.interactPressed = false;
+      inp.healDown = false; inp.healPressed = false; inp.healReleased = false;
+      inp.lookX = 0; inp.lookY = 0;
+    }
+    return inp;
+  }
+
+  /** 单个固定物理步。input 的 lookX/lookY 已由调用方按步数均摊。 */
+  stepPhysics(dt, input) {
+    const p = this.player;
+
+    // 可选：记录最近若干物理步的输入与状态，用于排查"某段序列之后手感异常"的问题。
+    // 默认关闭，零开销（只多一次 null 判断）。
+    if (this.trace) {
+      this.trace.push({
+        n: this.trace.length,
+        moveX: input.moveX, moveY: input.moveY, fire: !!input.fire,
+        jump: !!input.jump, crouch: !!input.crouch, sprint: !!input.sprint,
+        dash: !!input.dashPressed, grapple: !!input.grapplePressed,
+        hs: +p.state.hspeed.toFixed(2), y: +p.pos[1].toFixed(2),
+        grounded: p.state.grounded, state: p.state.moveState,
+        ammo: this.weapons.current.ammo, reloading: this.weapons.current.reloading,
+        paused: this.paused, upgradeOpen: !!this._upgradeOpen,
+      });
+      if (this.trace.length > 400) this.trace.shift();
+    }
+
+    // 治疗键必须先处理：长按轮盘期间屏蔽移动/视角，松开再消费道具。
+    this._updateHealingInput(dt, input);
+
+    // 哨兵整匣充能是带读条的重操作；按 B 的首帧以及后续充能期间都降速，
+    // 让玩家能明显感到“正在充能”，但仍可以转身/换位。
+    const currentWeaponState = this.weapons && this.weapons.state
+      ? this.weapons.state.get(this.weapons.slots[this.weapons.slotIndex].id) : null;
+    if (currentWeaponState && (currentWeaponState.charging || input.chargePressed)) {
+      const currentDef = this.weapons.current && this.weapons.current.def;
+      if (currentDef && currentDef.chargeTime > 0) {
+        input.moveX *= 0.35;
+        input.moveY *= 0.35;
+      }
+    }
+
+    // ADS 移速按开镜进度平滑过渡：完全开镜时严格为腰射移动速度的 50%。
+    // 倍率直接进入 Player 的 wishSpeed，不能缩放输入轴（方向计算会归一化）。
+    const currentWeapon = this.weapons && this.weapons.current;
+    const adsProgress = currentWeapon ? (currentWeapon.adsT || 0) : 0;
+    const adsMoveMul = currentWeapon && currentWeapon.def
+      ? (currentWeapon.def.adsMoveMul == null ? 0.5 : currentWeapon.def.adsMoveMul) : 1;
+    p.setActionMoveSpeedMul(M.lerp(1, adsMoveMul, adsProgress));
+
+    // 武器与运动系统各自需要独立的输入对象引用（武器会读同一份）
+    p.step(dt, input);
+
+    // 武器（每个物理步推进，保证 1080 RPM 在任何帧率下都准）
+    this.weapons.update(dt, input);
+
+    // 敌人与导演
+    this.enemies.update(dt, p);
+    this.director.update(dt);
+    this.run.update(dt, p);
+
+    if (this.inventory) this.inventory.update(dt, p);
+
+    // 危险区域伤害
+    this._hazardDamage(dt);
+
+    // 目标交互
+    this._interact(dt, input);
+
+    // 未拾取的升级机会
+    if (this.run.pendingUpgradeOffer && !this._upgradeOpen && this.player.alive) {
+      this.run.pendingUpgradeOffer = false;
+      this.openUpgradePanel();
+    }
+
+    // NaN 哨兵（默认关闭）：在物理步边界抓第一个非有限值，附带当时的上下文。
+    // 数值污染一旦发生就会沿 HUD 扩散，事后很难回溯，所以留一个可开启的探针。
+    if (this.nanSentinel && !this._nanReport) {
+      const bad = findNonFinite(this.weapons.state.get(this.weapons.slots[this.weapons.slotIndex].id), 'weaponState');
+      if (bad) {
+        this._nanReport = {
+          where: bad,
+          input: { moveX: input.moveX, moveY: input.moveY, fire: input.fire, ads: input.ads, lookX: input.lookX },
+          adsTimeMul: this.weapons.mods.weapon.adsTimeMul,
+          modsNotFinite: Object.keys(this.weapons.mods.weapon).filter((k) => !Number.isFinite(this.weapons.mods.weapon[k])),
+          defId: this.weapons.slots[this.weapons.slotIndex].id,
+          st: JSON.parse(JSON.stringify(this.weapons.state.get(this.weapons.slots[this.weapons.slotIndex].id))),
+        };
+      }
+    }
+  }
+
+  _interact(dt, input) {
+    const run = this.run;
+    const p = this.player;
+    // 地面物资优先于同位置的补给站，避免玩家面前有掉落物却总打开货架。
+    if (this.inventory && this.inventory.nearDrop && input.interactPressed) {
+      const got = this.inventory.pickupNearest(p);
+      if (this.hud) {
+        if (got.ok) this.hud.toast('已拾取', `${got.def.name} ×${got.added}`, 'good');
+        else if (got.reason === 'full') this.hud.toast('背包已满', '按 Tab 整理或丢弃物品', 'warn');
+      }
+      if (got.ok) Audio.play('loot_pickup', { gain: 0.68, rate: 1.0 });
+      input.interactPressed = false;
+    }
+    // 补给站：一次性交互同时补满生命、护盾与全部武器弹药，再打开升级面板。
+    // 旧版只打开改件货架，名字叫“补给站”却完全不给补给，是用户反馈的直接根因。
+    if (run.nearSupplyStation && input.interactPressed) {
+      run.nearSupplyStation.used = true;
+      const hpBefore = p.health;
+      const shieldBefore = p.shield;
+      p.heal(Math.max(0, p.maxHealth - p.health));
+      p.addShield(Math.max(0, p.maxShield - p.shield));
+      const ammoReport = this.weapons.refillAmmo();
+      // 兼容未来有限库存：补给站可补充治疗消耗品；当前药品/电池为无限库存，
+      // 因而不会被错误地截断为 4。生命/护盾本体仍立即补满。
+      if (this.healing) {
+        if (Number.isFinite(this.healing.medkits)) this.healing.medkits = Math.min(4, this.healing.medkits + 1);
+        if (Number.isFinite(this.healing.shieldBatteries)) this.healing.shieldBatteries = Math.min(4, this.healing.shieldBatteries + 1);
+        if (Number.isFinite(this.healing.syringes)) this.healing.syringes = Math.min(8, this.healing.syringes + 2);
+        if (Number.isFinite(this.healing.shieldCells)) this.healing.shieldCells = Math.min(8, this.healing.shieldCells + 2);
+      }
+      if (this.hud) {
+        const restored = Math.round((p.health - hpBefore) + (p.shield - shieldBefore));
+        this.hud.toast('补给完成', `生命/护盾 +${restored} · 弹药与治疗道具已补满`, 'good');
+        this.hud.setAlloy(this.upgrades.alloy);
+      }
+      Events.emit('ui:message', {
+        title: '补给完成', sub: `生命、护盾与 ${ammoReport.weapons} 把武器弹药已补满`, kind: 'good',
+      });
+      this.openUpgradePanel();
+    }
+    // 撤离提示
+    if (!this._promptText) this._promptText = '';
+    let prompt = '';
+    if (this.inventory && this.inventory.nearDrop) {
+      const d = this.inventory.nearDrop;
+      const def = d && d.itemId ? LOOT_DEFS[d.itemId] : null;
+      const name = def ? def.name : '物资';
+      const effect = def ? (def.effect || def.desc) : '';
+      prompt = `[E] 拾取 ${name}${d.count > 1 ? ' ×' + d.count : ''}${effect ? ` — ${effect}` : ''}`;
+    } else if (run.nearSupplyStation) prompt = '[E] 补满生命 / 护盾 / 弹药并打开改件货架';
+    else if (run.nearObjective && !run.nearObjective.done) {
+      prompt = `占领中… ${Math.round(run.nearObjective.progress * 100)}%`;
+    } else if (run.phase === RUN_PHASE.EXTRACTING) {
+      prompt = `撤离中 ${(run.extractProgress * 100).toFixed(0)}%`;
+    } else if (run.phase === RUN_PHASE.EXTRACT_READY) {
+      prompt = '前往撤离点';
+    }
+    if (prompt !== this._promptText) {
+      this._promptText = prompt;
+      if (this.hud) this.hud.setPrompt(prompt);
+    }
+    void dt;
+  }
+
+  _hazardDamage(dt) {
+    const hazards = this.world.hazards();
+    if (!hazards || hazards.length === 0) return;
+    const p = this.player;
+    const h = this.world.hazardAt(p.pos);
+    if (!h) { this._inHazard = false; return; }
+    // dps 由地图给（生成器的 strength 就是每秒伤害）
+    const dmg = (h.dps || 8) * dt;
+    p.applyDamage(dmg, [0, -1, 0], null);
+    if (!this._inHazard) {
+      this._inHazard = true;
+      if (this.hud) this.hud.toast('进入危险区', h.label || '高温/辐射区域 —— 立即离开', 'warn');
+    }
+    if (this.particles && Math.random() < dt * 10) {
+      const kind = h.kind === 'lava' || h.kind === 'heat' ? 'impact' : 'shield';
+      this.particles.emitBurst(p.pos, [0, 1, 0], kind, {});
+    }
+  }
+
+  /** 渲染一帧 */
+  renderFrame(dt) {
+    const e = this.engine;
+    const p = this.player;
+    const w = this.weapons;
+
+    // ---- 相机：位置插值 + 后坐力 + 震动
+    this.shake.update(dt);
+    p.shakeOffset[0] = this.shake.offset[0];
+    p.shakeOffset[1] = this.shake.offset[1];
+    p.shakeOffset[2] = this.shake.offset[2];
+    p.shakeRotation[0] = this.shake.rotation[0];
+    p.shakeRotation[1] = this.shake.rotation[1];
+    p.shakeRotation[2] = this.shake.rotation[2];
+    p.shakeFov = this.shake.fovOffset;
+    p.updateCamera(dt);
+
+    // 武器后坐力叠加到相机朝向（视觉通道）
+    const rec = w.getCameraRecoil();
+    const shakeYaw = this.shake.rotation[1];
+    const shakePitch = this.shake.rotation[0];
+    const viewYaw = p.yaw + rec.yaw + shakeYaw;
+    const viewPitch = M.clamp(p.pitch + rec.pitch + shakePitch, -CFG.cam.pitchLimit, CFG.cam.pitchLimit);
+    const fwd = VIEW_FWD;
+    M.dirFromAngles(viewYaw, viewPitch, fwd);
+
+    // 用 viewPitch/viewYaw 重算基向量用于相机（含 roll）
+    const cp = Math.cos(viewPitch), sp = Math.sin(viewPitch);
+    const cy = Math.cos(p.roll), sy = Math.sin(p.roll);
+    const up = VIEW_UP;
+    up[0] = sy * sp * cy + 0 * -sy;
+    // 简化：由 forward 与 roll 构造 up
+    buildUpFromForward(fwd, p.roll, up);
+
+    const fov = p.getFov(CFG.render.fovDeg);
+    e.setSize(this.canvas.clientWidth || window.innerWidth,
+      this.canvas.clientHeight || window.innerHeight, CFG.render.maxPixelRatio);
+    e.beginFrame();
+    e.setCamera(p.eyePos, fwd, up, fov, CFG.render.near, CFG.render.far);
+    void cp; void sy;
+
+    // ---- 世界与敌人
+    this.world.render(e);
+    if (this.inventory) this.inventory.render(e);
+    if (this.playerModel) this.playerModel.render(e, dt);
+    this.enemies.render(e);
+    // 敌人标记已默认开启；高亮仍参与深度测试，不能透过地板或墙体。
+    if (this.enemyMarkers.enabled) {
+      this.enemyMarkers.render(e, this.enemies, this.world, p.eyePos);
+    }
+
+    // ---- 特效
+    this.particles.update(dt);
+    this.decals.update(dt);
+    this.particles.render(e, p.right, p.up, p.forward);
+      this.decals.render(e, fwd);
+      w.projectiles.render(e);
+      w.projectiles.renderGrapple(e, p);
+
+    // ---- 音频听者与每帧内务（环境层排程、循环声部跟随）
+    Audio.update(dt, p.eyePos, p.forward);
+
+    // 世界 pass 必须在切换到视图模型相机前提交。过去所有几何都延迟到最后一次
+    // flush，枪在真正绘制前已恢复世界相机，因而会完全离开视野。
+    e.flushAndReset();
+
+    // ---- 武器视图模型（独立相机 + 独立深度）
+    w.render(e);
+    e.endFrame();
+
+    // ---- HUD
+    if (this.hud) {
+      const hpbs = this.enemies.getHealthBars();
+      this.hud.update(dt);
+      this.hud.setAlloy(this.upgrades ? this.upgrades.alloy : 0);
+      this.hud.render();
+      void hpbs;
+    }
+
+    // 调试线
+    if (CFG.debug.showCollision) this._drawDebugCollision();
+  }
+
+  _drawDebugCollision() {
+    const e = this.engine;
+    const p = this.player;
+    const c = [0.2, 1.0, 0.4];
+    e.drawLine(
+      [p.pos[0], p.pos[1], p.pos[2]],
+      [p.pos[0], p.pos[1] + p.currentHeight, p.pos[2]], c);
+    e.drawWireBox(
+      [p.pos[0] - p.radius, p.pos[1], p.pos[2] - p.radius],
+      [p.pos[0] + p.radius, p.pos[1] + p.currentHeight, p.pos[2] + p.radius], c);
+    for (const en of this.enemies.all) {
+      if (!en.alive) continue;
+      e.drawWireBox(
+        [en.pos[0] - en.radius, en.pos[1], en.pos[2] - en.radius],
+        [en.pos[0] + en.radius, en.pos[1] + en.height, en.pos[2] + en.radius],
+        [1.0, 0.3, 0.2]);
+    }
+  }
+
+  // ================================================================ 调试/自动化
+
+  setAutomationMode(b) {
+    this.automation = !!b;
+    Input.setAutomationMode(b);
+    return this.automation;
+  }
+
+  /**
+   * 无头推进：不依赖真实帧率，直接跑固定步。
+   *
+   * script 为分段输入数组，支持两种写法（可混用）：
+   *   { seconds, moveX, moveY, jump, crouch, sprint, fire, ads, charge, dash, grapple,
+   *     reload, swap, interact, heal, lookX, lookY }
+   *   { seconds, keys: ['KeyW','Space'] }    —— 走真实 Input 通道
+   *
+   * 语义型字段会被翻译成按键注入 Input（因此自动化测试同时覆盖输入层），
+   * 只有 lookX/lookY 这种连续量直接写进输入快照。
+   */
+  simulate(seconds, script) {
+    const total = Math.max(0, seconds || 0);
+    const wasPaused = this.paused;
+    this.paused = false;
+    // 自动化推进期间强制处于可操作状态，否则任何弹窗/死亡都会让整段模拟变成空转，
+    // 表现为"输入毫无反应"这种极难定位的现象。
+    this._upgradeOpen = false;
+    if (this.hud) this.hud.hideUpgradePanel();
+    const steps = Math.round(total / PHYS_DT);
+
+    const base = this._simInput || (this._simInput = {
+      moveX: 0, moveY: 0, jump: false, jumpPressed: false, jumpReleased: false,
+      crouch: false, crouchPressed: false, sprint: false, fire: false, ads: false,
+      reloadPressed: false, chargeDown: false, chargePressed: false, chargeReleased: false,
+      dashPressed: false, grappleDown: false, grapplePressed: false,
+      lookX: 0, lookY: 0, swapPressed: false, slot1Pressed: false, slot2Pressed: false, slot3Pressed: false, slot4Pressed: false,
+      interactPressed: false, interactDown: false, healDown: false, healPressed: false, healReleased: false,
+    });
+
+    const segments = Array.isArray(script) && script.length > 0 ? script : [{ seconds: total }];
+    const bounds = [];
+    let acc = 0;
+    for (const s of segments) {
+      const n = Math.max(1, Math.round((s.seconds || 0) / PHYS_DT));
+      bounds.push({ start: acc, end: acc + n, s });
+      acc += n;
+    }
+
+    // 按键状态由语义字段推导；"按下的瞬间"只在一段开始时注入一次。
+    // 注意：这里不用 keyState 去重 —— 去重会让同一个键在下一段无法再次产生"按下"边沿，
+    // 导致连续两次 simulate() 里的跳跃/冲刺/换弹全部失效。改成"先抬起再按下"来显式制造边沿。
+    const want = {};
+    let lastSeg = null;
+
+    let step = 0;
+
+    while (step < steps) {
+      let seg = bounds[bounds.length - 1].s;
+      let segStart = bounds[bounds.length - 1].start;
+      let segEnd = bounds[bounds.length - 1].end;
+      for (const b of bounds) {
+        if (step >= b.start && step < b.end) { seg = b.s; segStart = b.start; segEnd = b.end; break; }
+      }
+      const isSegStart = segStart === step;
+
+      // ---- 组装这一段的期望按键集合
+      const keys = seg.keys;
+      want.KeyW = keys ? keys.includes('KeyW') : (seg.moveY || 0) > 0.4;
+      want.KeyS = keys ? keys.includes('KeyS') : (seg.moveY || 0) < -0.4;
+      want.KeyD = keys ? keys.includes('KeyD') : (seg.moveX || 0) > 0.4;
+      want.KeyA = keys ? keys.includes('KeyA') : (seg.moveX || 0) < -0.4;
+      want.Space = keys ? keys.includes('Space') : !!seg.jump;
+      want.ControlLeft = keys ? keys.includes('ControlLeft') : !!seg.crouch;
+      want.ShiftLeft = keys ? keys.includes('ShiftLeft') : !!seg.sprint;
+      want.KeyQ = keys ? keys.includes('KeyQ') : !!seg.grapple;
+      want.KeyE = keys ? keys.includes('KeyE') : !!seg.interact;
+      want.AltLeft = keys ? keys.includes('AltLeft') : !!seg.dash;
+      want.KeyR = keys ? keys.includes('KeyR') : !!seg.reload;
+      want.KeyB = keys ? keys.includes('KeyB') : !!seg.charge;
+      want.Digit5 = keys ? keys.includes('Digit5') : !!seg.heal;
+
+      // ---- 应用按键：进入新段时先全部抬起，再按下本段需要的键（制造干净的边沿）
+      if (seg !== lastSeg) {
+        for (const code of Object.keys(want)) Input._injectKey(code, false);
+        lastSeg = seg;
+      }
+      for (const code of Object.keys(want)) Input._injectKey(code, want[code]);
+
+      Input._injectMouse(0, !!seg.fire);
+      Input._injectMouse(2, !!seg.ads);
+      if (seg.swap && isSegStart) Input._injectWheel(1);
+
+      // ---- 连续量（视角）按剩余步数均摊
+      const remaining = Math.max(1, segEnd - step);
+      const lx = (seg.lookX || 0) / remaining;
+      const ly = (seg.lookY || 0) / remaining;
+      // lookX/lookY 以"弧度"给出，换算成像素增量交给 Input（readInputInto 会再乘灵敏度）
+      if (lx || ly) Input._injectLook(-lx / Input.sensitivity, ly / Input.sensitivity);
+
+      // ---- 从 Input 读取这一物理步的真实输入（与真机路径完全一致）
+      this.readInputInto(base);
+      this.stepPhysics(PHYS_DT, base);
+
+      Input.endFrame();
+      step++;
+    }
+
+    // 收尾：抬起所有按键，避免键盘状态泄漏到后续的真实游玩或下一次调用
+    Input._resetAll();
+    base.moveX = 0; base.moveY = 0;
+    base.jump = base.jumpPressed = base.jumpReleased = false;
+    base.crouch = base.crouchPressed = false;
+    base.sprint = base.fire = base.ads = false;
+    base.chargeDown = base.chargePressed = base.chargeReleased = false;
+    base.dashPressed = base.grapplePressed = base.grappleDown = false;
+    base.reloadPressed = base.swapPressed = base.slot1Pressed = base.slot2Pressed = base.slot3Pressed = base.slot4Pressed =
+      base.interactPressed = base.interactDown = false;
+    base.healDown = base.healPressed = base.healReleased = false;
+    base.lookX = 0; base.lookY = 0;
+
+    // 视图相关的量也推进一次（相机/插值/HUD）
+    for (let i = 0; i < 3; i++) this.renderFrame(1 / 120);
+    this.paused = wasPaused;
+    return this.debugState();
+  }
+
+  /** 从 Input 读取一份输入快照写入 out（readInput 的零分配版本） */
+  readInputInto(out) {
+    const sens = Input.sensitivity;
+    const dy = Input.invertY ? -Input.mouseDY : Input.mouseDY;
+    const currentDef = this.weapons && this.weapons.current && this.weapons.current.def;
+    const lookMul = currentDef && currentDef.class === 'sniper' && Input.actionDown('ads')
+      ? Input.sniperSensitivity : 1;
+    // 连续视角量先写入；Game 暂停时不会推进物理。
+    out.lookX = -Input.mouseDX * sens * lookMul;
+    out.lookY = dy * sens * lookMul;
+    // 菜单覆盖层期间屏蔽游戏动作，避免在菜单里误开枪/误跳
+    if (Input.menuBlocking) {
+      // 菜单打开后连视角增量也必须归零。过去这里只屏蔽移动/开火，某些旁路
+      // 仍可能消费 Esc 前积累的 mousemove，造成“菜单出现但视角还被拖住”的错觉。
+      out.lookX = 0; out.lookY = 0;
+      out.moveX = 0; out.moveY = 0;
+      out.jump = false; out.jumpPressed = false; out.jumpReleased = false;
+      out.crouch = false; out.crouchPressed = false;
+      out.sprint = false; out.fire = false; out.ads = false;
+      out.reloadPressed = false;
+      out.chargeDown = false; out.chargePressed = false; out.chargeReleased = false;
+      out.dashPressed = false;
+      out.grappleDown = false; out.grapplePressed = false;
+      out.swapPressed = false; out.slot1Pressed = false; out.slot2Pressed = false; out.slot3Pressed = false; out.slot4Pressed = false;
+      out.interactDown = false; out.interactPressed = false;
+      out.healDown = false; out.healPressed = false; out.healReleased = false;
+      return out;
+    }
+    out.moveX = (Input.actionDown('right') ? 1 : 0) - (Input.actionDown('left') ? 1 : 0);
+    out.moveY = (Input.actionDown('forward') ? 1 : 0) - (Input.actionDown('back') ? 1 : 0);
+    out.jump = Input.actionDown('jump');
+    out.jumpPressed = Input.actionPressed('jump');
+    out.jumpReleased = Input.actionReleased('jump');
+    out.crouch = Input.actionDown('crouch');
+    out.crouchPressed = Input.actionPressed('crouch');
+    out.sprint = Input.actionDown('sprint');
+    out.fire = Input.actionDown('fire');
+    out.ads = Input.actionDown('ads');
+    out.reloadPressed = Input.actionPressed('reload');
+    out.chargeDown = Input.actionDown('charge');
+    out.chargePressed = Input.actionPressed('charge');
+    out.chargeReleased = Input.actionReleased('charge');
+    out.dashPressed = Input.actionPressed('dash');
+    out.grappleDown = Input.actionDown('grapple');
+    out.grapplePressed = Input.actionPressed('grapple');
+    out.swapPressed = Input.actionPressed('swap') || Input.wheel !== 0;
+    out.slot1Pressed = Input.actionPressed('weapon1');
+    out.slot2Pressed = Input.actionPressed('weapon2');
+    out.slot3Pressed = Input.actionPressed('weapon3');
+    out.slot4Pressed = Input.actionPressed('weapon4');
+    out.interactDown = Input.actionDown('interact');
+    out.interactPressed = Input.actionPressed('interact');
+    out.healDown = Input.actionDown('heal');
+    out.healPressed = Input.actionPressed('heal');
+    out.healReleased = Input.actionReleased('heal');
+    return out;
+  }
+
+  renderOnce() {
+    this.renderFrame(1 / 120);
+    return {
+      drawCalls: this.engine.stats.drawCalls,
+      triangles: this.engine.stats.triangles,
+      instances: this.engine.stats.instances,
+      batches: this.engine.stats.batches,
+    };
+  }
+
+  /** 测量一段时间的实际渲染帧率（用于自动化性能验证） */
+  async measureFps(ms) {
+    const duration = ms || 1500;
+    const start = performance.now();
+    let frames = 0;
+    let worst = 0;
+    let last = start;
+    const wasPaused = this.paused;
+    this.paused = false;
+    return new Promise((resolve) => {
+      const tick = () => {
+        const now = performance.now();
+        const dt = now - last;
+        last = now;
+        if (frames > 0) worst = Math.max(worst, dt);
+        frames++;
+        this.renderFrame(Math.min(0.05, dt / 1000));
+        if (now - start < duration) {
+          requestAnimationFrame(tick);
+        } else {
+          const elapsed = now - start;
+          this.paused = wasPaused;
+          resolve({
+            frames,
+            ms: Math.round(elapsed),
+            fps: Math.round((frames / elapsed) * 1000 * 10) / 10,
+            worstFrameMs: Math.round(worst * 100) / 100,
+            drawCalls: this.engine.stats.drawCalls,
+            triangles: this.engine.stats.triangles,
+          });
+        }
+      };
+      requestAnimationFrame(tick);
+    });
+  }
+
+  debugState() {
+    return {
+      ready: this._ready,
+      fps: Math.round(this.engine ? this.engine.stats.fps : 0),
+      fpsAvg: Math.round(this.engine ? this.engine.stats.fpsAvg : 0),
+      frameMs: this.engine ? Math.round(this.engine.stats.frameMs * 100) / 100 : 0,
+      cpuMs: this.engine ? Math.round(this.engine.stats.cpuMs * 100) / 100 : 0,
+      drawCalls: this.engine ? this.engine.stats.drawCalls : 0,
+      triangles: this.engine ? this.engine.stats.triangles : 0,
+      instances: this.engine ? this.engine.stats.instances : 0,
+      batches: this.engine ? this.engine.stats.batches : 0,
+      entities: this.enemies ? this.enemies.aliveCount() : 0,
+      particles: this.particles ? this.particles.count : 0,
+      decals: this.decals ? this.decals.aliveCount : 0,
+      projectiles: this.weapons ? this.weapons.projectiles.aliveCount : 0,
+      playerPos: this.player ? [round2(this.player.pos[0]), round2(this.player.pos[1]), round2(this.player.pos[2])] : null,
+      playerSpeed: this.player ? Math.round(this.player.state.speed * 100) / 100 : 0,
+      playerState: this.player ? this.player.state.moveState : 'none',
+      playerDetail: this.player ? this.player.debugState() : null,
+      weaponId: this.weapons ? this.weapons.current.id : null,
+      ammo: this.weapons ? this.weapons.current.ammo : 0,
+      weapon: this.weapons ? this.weapons.debugState() : null,
+      inventory: this.inventory ? this.inventory.debugState() : null,
+      healing: this.healing ? {
+        medkits: this.healing.medkits,
+        shieldBatteries: this.healing.shieldBatteries,
+        syringes: this.healing.syringes,
+        shieldCells: this.healing.shieldCells,
+        wheelOpen: this.healing.wheelOpen,
+        selection: this.healing.selection,
+      } : null,
+      runPhase: this.run ? this.run.phase : 'none',
+      run: this.run ? this.run.debugState() : null,
+      director: this.director ? this.director.debugState() : null,
+      enemies: this.enemies ? this.enemies.debugState() : null,
+      world: this.world ? this.world.debugState() : null,
+      map: this.mapName,
+      tier: this.tier,
+      paused: this.paused,
+      mapIndex: this.mapIndex,
+      errors: errors.slice(-8),
+      errorCount: errors.length,
+    };
+  }
+}
+
+// ---------------------------------------------------------------- 工具
+
+const VIEW_FWD = new Float32Array(3);
+const VIEW_UP = new Float32Array(3);
+
+function round2(v) { return Math.round(v * 100) / 100; }
+
+/** 找到对象里第一个非有限数值，返回 "路径=值" 或 null（NaN 探针用） */
+function findNonFinite(obj, path) {
+  if (!obj || typeof obj !== 'object') return null;
+  for (const k of Object.keys(obj)) {
+    const v = obj[k];
+    if (typeof v === 'number' && !Number.isFinite(v)) return `${path}.${k}=${v}`;
+    if (v && typeof v === 'object' && !ArrayBuffer.isView(v) && !Array.isArray(v)) {
+      const sub = findNonFinite(v, `${path}.${k}`);
+      if (sub) return sub;
+    }
+  }
+  return null;
+}
+
+/** 由前方向 + roll 构造上向量 */
+function buildUpFromForward(fwd, roll, out) {
+  // 取一个与 fwd 不平行的参考轴
+  let ux = 0, uy = 1, uz = 0;
+  if (Math.abs(fwd[1]) > 0.985) { ux = 1; uy = 0; uz = 0; }
+  // right = normalize(cross(fwd, up_ref))
+  let rx = fwd[1] * uz - fwd[2] * uy;
+  let ry = fwd[2] * ux - fwd[0] * uz;
+  let rz = fwd[0] * uy - fwd[1] * ux;
+  const rl = Math.hypot(rx, ry, rz) || 1;
+  rx /= rl; ry /= rl; rz /= rl;
+  // up = cross(right, fwd)
+  let ux2 = ry * fwd[2] - rz * fwd[1];
+  let uy2 = rz * fwd[0] - rx * fwd[2];
+  let uz2 = rx * fwd[1] - ry * fwd[0];
+  // 施加 roll
+  const c = Math.cos(roll), s = Math.sin(roll);
+  out[0] = ux2 * c + rx * s;
+  out[1] = uy2 * c + ry * s;
+  out[2] = uz2 * c + rz * s;
+  return out;
+}
+
+/** 合并两套 modifiers（乘算键相乘，加算键相加） */
+function mergeModifiers(a, b) {
+  const out = { move: {}, weapon: {}, meta: {} };
+  for (const group of ['move', 'weapon', 'meta']) {
+    const ga = (a && a[group]) || {};
+    const gb = (b && b[group]) || {};
+    const keys = new Set([...Object.keys(ga), ...Object.keys(gb)]);
+    for (const k of keys) {
+      const va = ga[k];
+      const vb = gb[k];
+      if (va == null) { out[group][k] = vb; continue; }
+      if (vb == null) { out[group][k] = va; continue; }
+      if (k.endsWith('Mul')) out[group][k] = va * vb;
+      else if (typeof va === 'boolean' || typeof vb === 'boolean') out[group][k] = (va || vb) ? 1 : 0;
+      else out[group][k] = va + vb;
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------- 启动
+
+let game = null;
+
+async function boot() {
+  const canvas = document.getElementById('game-canvas');
+  const hudRoot = document.getElementById('hud-root') || document.body;
+  if (!canvas) {
+    recordError('缺少 #game-canvas 元素', null);
+    return;
+  }
+
+  // 全局错误收集
+  window.addEventListener('error', (ev) => {
+    recordError(ev.message, ev.error && ev.error.stack);
+  });
+  window.addEventListener('unhandledrejection', (ev) => {
+    recordError('未处理的 Promise 拒绝: ' + (ev.reason && ev.reason.message ? ev.reason.message : ev.reason),
+      ev.reason && ev.reason.stack);
+  });
+
+  try {
+    game = new Game(canvas, hudRoot);
+    await game.init();
+    game.applySettings(game.settings);
+    game.start();
+    window.__IRONFALL__ = {
+      game,
+      CFG,
+      Engine,
+      World,
+      Player,
+      WeaponSystem,
+      EnemySystem,
+      Director,
+      Run,
+      UpgradeSystem,
+      WEAPONS,
+      ENEMY_TYPES,
+      MISSIONS,
+      BIOMES,
+      RARITIES,
+      Input,
+      Events,
+      Audio,
+      errors,
+      ready: true,
+      // 自动化辅助
+      simulate: (sec, script) => game.simulate(sec, script),
+      renderOnce: () => game.renderOnce(),
+      measureFps: (ms) => game.measureFps(ms),
+      setAutomationMode: (b) => game.setAutomationMode(b),
+      startRun: () => game.startRun(),
+      debugState: () => game.debugState(),
+      version: '1.0.0',
+    };
+    // 加载遮罩交还给 HUD
+    const overlay = document.getElementById('load-overlay');
+    if (overlay) overlay.classList.remove('load-overlay--static');
+  } catch (err) {
+    recordError('启动失败: ' + (err && err.message ? err.message : err), err && err.stack);
+    const overlay = document.getElementById('load-overlay');
+    if (overlay) {
+      const t = document.getElementById('load-text');
+      if (t) t.textContent = '启动失败：' + (err && err.message ? err.message : '未知错误');
+    }
+    // 仍然暴露错误信息供自动化读取
+    window.__IRONFALL__ = { errors, ready: false, bootError: String(err && err.message) };
+  }
+}
+
+if (typeof window !== 'undefined') {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
+  }
+}
+
+export { Game, boot, mergeModifiers };

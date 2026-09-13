@@ -1,0 +1,216 @@
+/* ==== styles/hud-fixes.css — 修正 HUD 状态类的 CSS 特异性 ====
+ *
+ * 背景（真实 bug，用户实测发现）：
+ *   hud.css 用 **ID 选择器**定义这些元素的基准态，例如
+ *       #menu-overlay      { opacity: 0 }
+ *       .menu-overlay--on  { opacity: 1 }
+ *   ID 选择器特异性是 (1,0,0)，类选择器是 (0,1,0) —— 类**永远赢不了**。
+ *   后果：开始菜单 / 暂停 / 设置 / 操作说明 / 死亡结算 / 目标进度 /
+ *         撤离倒计时 / 换弹提示 / 连杀计数 / 交互提示 全部被压成 opacity:0。
+ *         元素在 DOM 里、类也加上了，就是看不见 —— 表现为"没有开始界面"。
+ *
+ * 修法：不动 hud.css（该文件由 UI 模块自测覆盖），
+ *       在这里用 `#id.class` 形式（特异性 1,1,0）显式覆盖一次。
+ *
+ * 约定：以后新增任何 `--on / --active / --open` 状态类，
+ *       只要它要覆盖的属性也被同名 ID 规则声明过，就必须在这里补一条。
+ *       tools/test-modules.mjs 会扫描 hud.css 检查是否还有漏网的冲突。
+ */
+
+/* 开始菜单 / 暂停 / 设置 / 操作说明 / 死亡结算 / 撤离结算 */
+#menu-overlay.menu-overlay--on {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* 目标进度条 */
+#hud-objective.hud-objective--on {
+  opacity: 1;
+  transform: none;
+}
+
+/* 撤离倒计时 */
+#hud-extraction.hud-extraction--on {
+  opacity: 1;
+  transform: none;
+}
+
+/* 换弹提示 */
+#hud-reload.hud-reload--on {
+  opacity: 1;
+  transform: none;
+}
+
+/* 连杀计数 */
+#hud-combo.hud-combo--on {
+  opacity: 1;
+  transform: none;
+}
+
+/* 交互提示（[F] 接入补给站 等） */
+#hud-prompt.hud-prompt--on {
+  opacity: 1;
+  transform: none;
+}
+
+/* F3 调试面板（同样被 ID 规则压住，之前按 F3 什么都不会出现） */
+#hud-debug.hud-debug--on {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+
+/* 肉鸽升级面板（这才是"3 选 1"能不能弹出来的关键） */
+#hud-upgrade.hud-upgrade--on {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+
+/* 准心：默认可见（它同样可能被 ID 规则压住） */
+#hud-crosshair.hud-crosshair--on {
+  opacity: 1;
+}
+
+/* ------------------------------------------------------------------
+ * 指针锁定时彻底隐藏系统光标，保证屏幕上只有一个（HUD 的）准心。
+ * base.css 里 canvas 默认 cursor:crosshair，会和 HUD 准心叠成"两个准心"。
+ * ------------------------------------------------------------------ */
+body.pointer-locked,
+body.pointer-locked #game-canvas,
+body.pointer-locked #hud-root,
+body.pointer-locked #hud,
+body.is-playing #game-canvas {
+  cursor: none;
+}
+
+/* 指针锁不可用的降级模式需要保留系统光标。 */
+body.fallback-look #game-canvas {
+  cursor: crosshair;
+}
+
+/* 暂停/菜单打开时恢复系统光标（菜单里要用鼠标点） */
+body.menu-open,
+body.menu-open #game-canvas,
+body.menu-open #hud-root,
+body.menu-open #hud {
+  cursor: auto;
+}
+
+/* ------------------------------------------------------------------
+ * 远征简报面板：正文排版
+ * hud.css 里没有为简报正文定义行高，多行中文会挤在一起重叠。
+ * ------------------------------------------------------------------ */
+.menu-briefing-body {
+  margin: 14px 0 4px;
+  padding: 0 2px;
+  text-align: left;
+}
+
+.menu-briefing-world,
+.menu-briefing-mission {
+  font-size: 14px;
+  line-height: 1.85;
+  letter-spacing: 0.02em;
+  color: rgba(223, 232, 240, 0.86);
+  white-space: pre-line;       /* 保留换行，让任务简报的分行生效 */
+  margin-bottom: 12px;
+}
+
+.menu-briefing-world {
+  color: rgba(223, 232, 240, 0.72);
+  border-left: 2px solid rgba(127, 227, 255, 0.36);
+  padding-left: 10px;
+}
+
+.menu-briefing-mission {
+  color: #dfe8f0;
+  border-left: 2px solid rgba(255, 176, 58, 0.5);
+  padding-left: 10px;
+}
+
+.menu-briefing-meta {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.6;
+  letter-spacing: 0.12em;
+  color: rgba(127, 227, 255, 0.78);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 制作名单排版 */
+.menu-credits-body {
+  margin: 14px 0 4px;
+  text-align: left;
+}
+
+.menu-credits-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 5px 2px;
+  font-size: 13px;
+  line-height: 1.5;
+  border-bottom: 1px solid rgba(127, 227, 255, 0.08);
+}
+
+.menu-credits-k {
+  color: rgba(127, 227, 255, 0.8);
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+
+.menu-credits-v {
+  color: rgba(223, 232, 240, 0.8);
+  text-align: right;
+}
+
+/* 操作说明：键位列排版兜底（避免长文本相互挤压） */
+.menu-help-body {
+  margin: 12px 0 4px;
+  text-align: left;
+}
+
+.menu-help-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 3px 2px;
+  font-size: 13px;
+  line-height: 1.6;
+  border-bottom: 1px solid rgba(127, 227, 255, 0.06);
+}
+
+.menu-help-key {
+  color: #7fe3ff;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.menu-help-desc {
+  color: rgba(223, 232, 240, 0.78);
+  text-align: right;
+}
+
+/* 设置面板：数值列不要被长标签挤掉 */
+.menu-setting {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 2px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.menu-setting-label {
+  flex: 0 0 116px;
+  color: rgba(223, 232, 240, 0.82);
+  letter-spacing: 0.04em;
+}
+
+.menu-setting-value {
+  flex: 0 0 76px;
+  text-align: right;
+  color: #7fe3ff;
+  font-variant-numeric: tabular-nums;
+}

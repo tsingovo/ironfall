@@ -1,0 +1,138 @@
+/* ==== styles/base.css — 全局重置与画布布局（HUD 样式在 hud.css） ==== */
+
+:root {
+  --if-bg: #05070a;
+  --if-ink: #dfe8f0;
+  --if-accent: #7fe3ff;
+  --if-warn: #ff5a4a;
+  --if-amber: #ffb03a;
+  --if-font: 'Barlow Condensed', 'Rajdhani', 'Segoe UI', system-ui, -apple-system,
+             'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--if-bg);
+  color: var(--if-ink);
+  font-family: var(--if-font);
+  /* 游戏内不需要文本选择与触摸手势 */
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+  overscroll-behavior: none;
+}
+
+body {
+  position: fixed;
+  inset: 0;
+}
+
+/* 画布铺满窗口；尺寸由 main.js 按 devicePixelRatio 设定 */
+#game-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: #05070a;
+  cursor: crosshair;
+  outline: none;
+}
+
+/* 指针锁定后隐藏系统光标，改用 HUD 里的准心 */
+body.pointer-locked #game-canvas { cursor: none; }
+
+/* HUD 层：不拦截鼠标事件，具体控件自行开启 pointer-events */
+#hud-root {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 10;
+}
+
+/* ---------------- 加载遮罩的兜底样式 ----------------
+   hud.js 接管后会加上 load-overlay--done 类淡出；
+   这里保证即使脚本还没跑起来也有一块像样的画面。 */
+.load-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(ellipse at 50% 120%, rgba(127, 227, 255, 0.10), transparent 60%),
+    linear-gradient(160deg, #070a0f 0%, #05070a 55%, #0a0d12 100%);
+  transition: opacity 420ms ease, visibility 420ms ease;
+}
+
+.load-overlay--done {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.load-frame {
+  min-width: 320px;
+  max-width: min(560px, 86vw);
+  padding: 26px 30px 22px;
+  text-align: center;
+  border: 1px solid rgba(127, 227, 255, 0.18);
+  background: rgba(8, 12, 17, 0.72);
+  /* 工业风切角 */
+  clip-path: polygon(14px 0, 100% 0, 100% calc(100% - 14px), calc(100% - 14px) 100%, 0 100%, 0 14px);
+}
+
+.load-title {
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  color: var(--if-accent);
+  text-shadow: 0 0 18px rgba(127, 227, 255, 0.35);
+}
+
+.load-text {
+  margin-top: 10px;
+  font-size: 13px;
+  letter-spacing: 0.12em;
+  color: rgba(223, 232, 240, 0.62);
+}
+
+.load-track {
+  position: relative;
+  height: 3px;
+  margin-top: 20px;
+  background: rgba(127, 227, 255, 0.12);
+  overflow: hidden;
+}
+
+.load-bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  display: block;
+  width: 0%;
+  background: linear-gradient(90deg, var(--if-accent), #ffffff);
+  box-shadow: 0 0 12px rgba(127, 227, 255, 0.7);
+  transition: width 180ms ease-out;
+}
+
+.load-pct {
+  margin-top: 10px;
+  font-size: 12px;
+  letter-spacing: 0.18em;
+  color: rgba(223, 232, 240, 0.45);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 降低动效偏好：关闭过渡 */
+@media (prefers-reduced-motion: reduce) {
+  .load-overlay, .load-bar { transition: none; }
+}

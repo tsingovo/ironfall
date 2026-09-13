@@ -1,0 +1,20 @@
+# 运行时产物（启动器日志、临时文件）
+launch.log
+*.log
+
+# 自测截图输出（每次跑测试都会重新生成，不入库）
+docs/verify/
+
+# 依赖与构建产物（本项目零依赖，这里只是防御性忽略）
+node_modules/
+dist/
+build/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*~

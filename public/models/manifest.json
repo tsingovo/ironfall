@@ -1,0 +1,47 @@
+{
+  "$comment": "外部模型导入清单。把 .glb 放到 public/models/ 并在此登记即可在场景中显示。",
+  "version": 1,
+  "visuals": [
+    {
+      "id": "tank_cluster",
+      "file": "tank_cluster.glb",
+      "category": "structure",
+      "$note": "collision.mode: none=纯装饰 / box=用模型包围盒生成碰撞 / aabbPerNode=每个网格节点一个盒",
+      "collision": {
+        "mode": "box"
+      },
+      "placements": [
+        {
+          "pos": [
+            -18,
+            0,
+            -18
+          ],
+          "yaw": 0.4,
+          "scale": 1
+        },
+        {
+          "pos": [
+            18,
+            0,
+            -22
+          ],
+          "yaw": -0.9,
+          "scale": 1.15
+        },
+        {
+          "pos": [
+            -22,
+            0,
+            20
+          ],
+          "yaw": 2.1,
+          "scale": 0.9
+        }
+      ]
+    }
+  ],
+  "replace": {
+    "$comment": "把某个程序化道具替换成高模：键为程序化 ID，值为文件名。"
+  }
+}

@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>IRONFALL · 钢铁远征</title>
+<meta name="description" content="工业星际远征第一人称射击 · 肉鸽 · Apex 风格强化运动系统">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%230b0e12'/%3E%3Cpath d='M6 24V8h4l6 9 6-9h4v16h-4v-9l-6 8-6-8v9z' fill='%237fe3ff'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="styles/base.css">
+<link rel="stylesheet" href="styles/hud.css">
+<link rel="stylesheet" href="styles/inventory.css">
+<!-- 必须放在 hud.css 之后：修正 ID/类 选择器特异性冲突（见文件头注释） -->
+<link rel="stylesheet" href="styles/hud-fixes.css">
+</head>
+<body>
+
+<!-- WebGL2 画布：所有 3D 渲染目标 -->
+<canvas id="game-canvas" tabindex="0" aria-label="游戏画面"></canvas>
+
+<!-- HUD 挂载点：hud.js 会把全部界面元素建在这里 -->
+<div id="hud-root"></div>
+
+<!--
+  静态加载遮罩：首帧之前就能看到东西，避免黑屏。
+  hud.js 会复用这个结构（按 id 查找子元素），并接管进度与文案。
+-->
+<div id="load-overlay" class="load-overlay load-overlay--static">
+  <div id="load-frame" class="load-frame">
+    <div id="load-title" class="load-title">钢铁远征</div>
+    <div id="load-text" class="load-text">正在装载熔炉世界…</div>
+    <div id="load-track" class="load-track"><i id="load-bar" class="load-bar"></i></div>
+    <div id="load-pct" class="load-pct">0%</div>
+  </div>
+</div>
+
+<!-- 无 WebGL2 时的降级提示（由 base.css 控制显隐） -->
+<noscript>
+  <div class="load-overlay">
+    <div class="load-frame">
+      <div class="load-title">需要启用 JavaScript</div>
+      <div class="load-text">本作是完全在浏览器中运行的第一人称射击游戏，请启用 JavaScript 后重新载入。</div>
+    </div>
+  </div>
+</noscript>
+
+<script type="module" src="src/main.js"></script>
+</body>
+</html>
