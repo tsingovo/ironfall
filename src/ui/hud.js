@@ -54,18 +54,46 @@ const CREDITS_LINES = [
 // 菜单静态描述：构造时一次性建 DOM，之后只切 class / 文本。
 const MENU_SPEC = {
   main: {
-    tag: 'IRONFALL // BUILD 1.0',
+    tag: 'IRONFALL // BUILD 2.0',
     title: '钢铁远征',
     sub: 'IRONFALL',
     note: '你是钢铁远征舰队熔炉世界里的拾荒者。搜刮、变强、活着撤离。',
     items: [
       { key: '1', label: '开始远征', sub: 'NEW EXPEDITION', intent: 'start_run', primary: true },
       { key: '2', label: '继续', sub: 'CONTINUE', intent: 'resume' },
-      { key: '3', label: '远征简报', sub: 'MISSION BRIEFING', intent: 'open_briefing' },
-      { key: '4', label: '设置', sub: 'SETTINGS', intent: 'open_settings' },
-      { key: '5', label: '操作说明', sub: 'CONTROLS', intent: 'open_help' },
-      { key: '6', label: '制作名单', sub: 'CREDITS', intent: 'open_credits' },
+      { key: '3', label: '战役选择', sub: 'TEN-MISSION CAMPAIGN', intent: 'open_campaign' },
+      { key: '4', label: '局外军械库', sub: 'PERMANENT ARMORY', intent: 'open_armory' },
+      { key: '5', label: '远征简报', sub: 'MISSION BRIEFING', intent: 'open_briefing' },
+      { key: '6', label: '设置', sub: 'SETTINGS', intent: 'open_settings' },
+      { key: '7', label: '操作说明', sub: 'CONTROLS', intent: 'open_help' },
+      { key: '8', label: '制作名单', sub: 'CREDITS', intent: 'open_credits' },
     ],
+  },
+  campaign: {
+    tag: 'CAMPAIGN // 01—10',
+    title: '战役选择',
+    sub: 'EXPEDITION TIERS',
+    note: '撤离成功会解锁下一关。选择已解锁任务后立即部署。',
+    campaign: true,
+    items: Array.from({ length: 10 }, (_v, i) => ({
+      key: String(i + 1), label: `第 ${i + 1} 关`, sub: 'LOCKED', intent: 'select_mission', tier: i + 1,
+      primary: i === 0,
+    })).concat([{ key: '0', label: '返回', sub: 'BACK', intent: 'open_main' }]),
+  },
+  armory: {
+    tag: 'META ARMORY',
+    title: '局外军械库',
+    sub: 'PERMANENT UPGRADES',
+    note: '使用撤离获得的远征点数购买；效果从下一次部署开始永久生效。',
+    armory: true,
+    items: [
+      ['servo_legs', '伺服义肢'], ['plate_carrier', '复合装甲板'],
+      ['cell_bank', '电容阵列'], ['scavenger', '拾荒者协议'],
+      ['dash_module', '冲刺电容模组'], ['grapple_spool', '加长绞盘'],
+      ['fire_control', '火控芯片'], ['trauma_kit', '战地医疗包'],
+      ['extract_beacon', '撤离信标强化'], ['luck_chip', '幸运算法'],
+    ].map((p, i) => ({ key: String(i + 1), label: p[1], sub: 'PURCHASE', intent: 'buy_perk', perkId: p[0] }))
+      .concat([{ key: '0', label: '返回', sub: 'BACK', intent: 'open_main' }]),
   },
   pause: {
     tag: 'SYSTEM HALT',
@@ -814,6 +842,7 @@ export class HUD {
       // 动态文本元素登记到 el 索引，render/_paintMenu 才能按 id 找到它们
       el['menu-' + kind + '-title'] = title;
       el['menu-' + kind + '-sub'] = sub;
+      el['menu-' + kind + '-note'] = note;
       this._append(head, tag, title, sub, note);
 
       // 阵亡 / 撤离结算统计
@@ -913,7 +942,7 @@ export class HUD {
         if (isub) isub.textContent = it.sub;
         this._append(btn, key, label, isub);
         this._append(list, btn);
-        const entry = { el: btn, spec: it, index: i };
+        const entry = { el: btn, spec: it, index: i, label, sub: isub };
         items.push(entry);
         this._bind(btn, 'click', () => this._activate({ type: 'item', item: it }));
         this._bind(btn, 'mouseenter', () => this._navToElement(btn));
@@ -2216,6 +2245,43 @@ export class HUD {
         this._text(this.el['set-value-' + cfgItem.id], this._fmtSetting(cfgItem, v));
       }
     }
+    if (spec.campaign) {
+      const meta = this.ctx && this.ctx.meta;
+      const missions = (this.ctx && this.ctx.missions) || [];
+      const unlocked = Math.max(1, Math.min(10, num(meta && meta.unlocked && meta.unlocked.tiers, 1)));
+      for (const entry of (this._menuItems[kind] || [])) {
+        const tier = entry.spec.tier;
+        if (!tier) continue;
+        const mission = missions[tier - 1] || {};
+        const locked = tier > unlocked;
+        this._text(entry.label, `第 ${tier} 关 · ${mission.title || '未知任务'}`);
+        this._text(entry.sub, locked ? '未解锁' : (mission.world || '可部署'));
+        entry.spec.disabled = locked;
+        this._cls(entry.el, 'menu-item--disabled', locked);
+      }
+    }
+    if (spec.armory) {
+      const meta = this.ctx && this.ctx.meta;
+      const perks = (this.ctx && this.ctx.perks) || {};
+      const points = Math.max(0, num(meta && meta.points, 0));
+      const stashItems = meta && meta.stash && meta.stash.items ? meta.stash.items : {};
+      const stashCount = Object.values(stashItems).reduce((sum, n) => sum + Math.max(0, num(n, 0)), 0);
+      this._text(this.el['menu-armory-note'], `远征点数：${points} · 仓库物资：${stashCount} 件。单击购买，永久生效。`);
+      for (const entry of (this._menuItems[kind] || [])) {
+        const id = entry.spec.perkId;
+        if (!id) continue;
+        const def = perks[id] || {};
+        const level = Math.max(0, num(meta && meta.perks && meta.perks[id], 0));
+        const max = Math.max(1, num(def.maxStacks, 1));
+        const cost = meta && typeof meta.perkCost === 'function' ? meta.perkCost(id) : num(def.cost, 0);
+        const full = level >= max;
+        const affordable = !full && points >= cost;
+        this._text(entry.label, `${def.name || entry.spec.label}  ${level}/${max}`);
+        this._text(entry.sub, full ? '已满级' : `${cost} 点 · ${def.desc || ''}`);
+        entry.spec.disabled = full || !affordable;
+        this._cls(entry.el, 'menu-item--disabled', entry.spec.disabled);
+      }
+    }
     // 远征简报：把 game 注入的剧情与任务文案画上去
     if (spec.briefing) {
       const b = this._briefing || {};
@@ -2266,7 +2332,7 @@ export class HUD {
       for (const s of SETTINGS_SPEC) out.push({ type: 'setting', spec: s, el: this.el['set-row-' + s.id] });
     }
     const items = this._menuItems[kind] || [];
-    for (const it of items) out.push({ type: 'item', item: it.spec, el: it.el });
+    for (const it of items) if (!it.spec.disabled) out.push({ type: 'item', item: it.spec, el: it.el });
     return out;
   }
 
@@ -2309,9 +2375,9 @@ export class HUD {
       return;
     }
     const item = target.item;
-    if (!item) return;
+    if (!item || item.disabled) return;
     this._sfx('ui_click');
-    this._intent(item.intent, { menu: this._menu });
+    this._intent(item.intent, { menu: this._menu, tier: item.tier, perkId: item.perkId });
   }
 
   _adjustNav(dir) {

@@ -100,6 +100,8 @@ const DEFAULTS = {
     slideJumpForwardBoost: 0.65,
     slideSteer: 0.85,          // 滑铲转向能力
     slideDownhillBoost: 8.5,   // 下坡沿坡加速
+    slideDownhillMaxSpeed: 18.5, // 坡面重力助推软上限；保留技能带入的更高动量但不继续无限增速
+    slideGroundSnapDist: 0.68, // 高速越过坡折/三角拼缝时向下贴地，避免胶囊前缘卡脚
     slopeAccel: 6.4,           // 通用边坡加速度
     slopeUphillPenalty: 0.55,
     // 蹬墙跑

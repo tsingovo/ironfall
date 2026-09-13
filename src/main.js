@@ -25,7 +25,7 @@ import { EnemyMarkerSystem } from './fx/enemy-markers.js';
 import { generateMap, MISSIONS, getMission, getBiome, BIOMES } from './maps/builtin-maps.js';
 import { loadGLTF, gltfInstanceModels } from './fx/gltf.js';
 import { HUD } from './ui/hud.js';
-import { Save, MetaProgress } from './save.js';
+import { Save, MetaProgress, PERKS } from './save.js';
 import { InventorySystem, LOOT_DEFS } from './inventory.js';
 import { PlayerModelRenderer } from './player-model.js';
 
@@ -115,8 +115,8 @@ class Game {
     this.meta = new MetaProgress();
     this.settings = this._loadSettings();
 
-    this.mapIndex = 0;
-    this.tier = 1;
+    this.tier = typeof this.meta.currentTier === 'function' ? this.meta.currentTier() : 1;
+    this.mapIndex = this.tier - 1;
     this._ready = false;
     this._interp = 1;
     this._boundFrame = this.frame.bind(this);
@@ -142,7 +142,7 @@ class Game {
     // 世界
     const world = new World(engine);
     this.world = world;
-    this.loadMission(0, { initial: true });
+    this.loadMission(this.mapIndex, { initial: true });
 
     // 玩家
     const player = new Player(world, engine, {
@@ -203,7 +203,7 @@ class Game {
       player, weapons: this.weapons, enemies: this.enemies, director: this.director,
       run: this.run, upgrades: this.upgrades, audio: Audio, engine, world, input: Input,
       config: CFG, stats: engine.stats, errors, settings: this.settings, healing: this.healing,
-      inventory: this.inventory,
+      inventory: this.inventory, meta: this.meta, perks: PERKS, missions: MISSIONS,
     });
     this.hud.onIntent = (name, payload) => this._onIntent(name, payload);
 
@@ -353,6 +353,9 @@ class Game {
     on('hit:world', (p) => {
       if (this.particles) this.particles.emitBurst(p.point, p.normal, 'impact', {});
       if (this.decals) this.decals.add(p.point, p.normal, { kind: 'bullet' });
+      if (this.run && typeof this.run.damageObjectiveAt === 'function') {
+        this.run.damageObjectiveAt(p.point, p.damage || 1);
+      }
     });
     on('player:land', (p) => {
       if (this.particles) {
@@ -391,6 +394,9 @@ class Game {
     });
     on('objective:complete', (p) => {
       if (this.hud) this.hud.toast('目标完成', p.label, 'good');
+    });
+    on('objective:loot', (p) => {
+      if (this.inventory && p && p.itemId) this.inventory.add(p.itemId, 1);
     });
     on('ui:message', (p) => {
       if (this.hud) this.hud.toast(p.title, p.sub, p.kind || 'info');
@@ -533,7 +539,10 @@ class Game {
     this.setPlaying(true);
     if (this.hud) { this.hud.hideMenu(); this.hud.setVisible(true); }
 
+    if (this.weapons && typeof this.weapons.resetLoadout === 'function') this.weapons.resetLoadout();
     this.loadMission(this.tier - 1, {});
+    const deploymentCarry = this._consumeDeploymentCarry();
+    if (deploymentCarry && this.inventory) this.inventory.importCarry(deploymentCarry);
     this.player.resetArmorShieldBonus();
     this.player.respawn(this.findSpawn());
     this.enemies.clear();
@@ -728,12 +737,10 @@ class Game {
   _onIntent(name, payload) {
     switch (name) {
       case 'start_run':
-        this.meta.stats.runs++;
         this.startRun();
         break;
       case 'restart':
       case 'retry':
-        this.meta.stats.runs++;
         this.retryRun();
         break;
       case 'resume':
@@ -804,10 +811,12 @@ class Game {
         else this.exitFullscreen();
         break;
       case 'open_settings':
-        this.hud.showMenu('settings');
+        if (this._playing) this.openMenuPanel('settings', { freeze: true });
+        else this.hud.showMenu('settings');
         break;
       case 'open_help':
-        this.hud.showMenu('help');
+        if (this._playing) this.openMenuPanel('help', { freeze: true });
+        else this.hud.showMenu('help');
         break;
       case 'open_credits':
         this.hud.showMenu('credits');
@@ -816,6 +825,41 @@ class Game {
         this._feedBriefing();
         this.hud.showMenu('briefing');
         break;
+      case 'open_campaign':
+        if (this.hud) this.hud.showMenu('campaign');
+        break;
+      case 'select_mission': {
+        const tier = Math.max(1, Math.min(10, Number(payload && payload.tier) | 0));
+        const unlocked = Math.max(1, Math.min(10, Number(this.meta.unlocked && this.meta.unlocked.tiers) || 1));
+        if (tier > unlocked) {
+          if (this.hud) this.hud.toast('任务尚未解锁', `先完成第 ${tier - 1} 关并成功撤离`, 'warn');
+          break;
+        }
+        if (typeof this.meta.setCurrentTier === 'function') this.meta.setCurrentTier(tier);
+        this.meta.persist();
+        this.tier = tier;
+        this.mapIndex = tier - 1;
+        this.startRun();
+        break;
+      }
+      case 'open_armory':
+        if (this.hud) this.hud.showMenu('armory');
+        break;
+      case 'buy_perk': {
+        const id = payload && payload.perkId;
+        if (this.meta.buy(id)) {
+          this.meta.persist();
+          this._applyModifiers();
+          if (this.hud) {
+            this.hud.toast('永久改件已安装', PERKS[id] ? PERKS[id].name : id, 'good');
+            this.hud.showMenu('armory');
+          }
+        } else if (this.hud) {
+          const need = this.meta.perkCost(id);
+          this.hud.toast('无法购买', Number.isFinite(need) ? `需要 ${need} 远征点数` : '该改件已满级', 'warn');
+        }
+        break;
+      }
       case 'open_main':
         if (this.hud) this.hud.showMenu('main');
         break;
@@ -826,6 +870,11 @@ class Game {
 
   _onRunEnd(p) {
     const st = p.stats || {};
+    // 只有成功撤离才把有限物资、稀有枪械与已装配件写入局外仓库；阵亡则全部丢失。
+    if (p.extracted && this.inventory && typeof this.inventory.exportCarry === 'function'
+      && typeof this.meta.storeCarry === 'function') {
+      this.meta.storeCarry(this.inventory.exportCarry());
+    }
     const earned = this.meta.recordRun({
       extracted: p.extracted,
       tier: this.tier,
@@ -835,6 +884,11 @@ class Game {
       alloy: this.run ? this.run.alloy : 0,
       score: this.run ? this.run.score : 0,
     });
+    // 十关战役不是只存在于数据表：成功撤离后“再次远征”会自动进入下一关，
+    // 也可从主菜单的战役选择重玩任意已解锁关卡。
+    this._nextTier = p.extracted
+      ? (typeof this.meta.currentTier === 'function' ? this.meta.currentTier() : Math.min(10, this.tier + 1))
+      : this.tier;
     this.director.stop();
     if (this.inventory) this.inventory.setOpen(false, this.player);
     this.paused = true;
@@ -854,6 +908,27 @@ class Game {
     Audio.play(p.extracted ? 'extract_success' : 'player_die');
     // 阵亡时也起自动重生倒计时，避免卡在结算界面
     if (!p.extracted) this._respawnTimer = 12;
+  }
+
+  /** 从仓库原子取出全部上次战利品，作为下一次部署物资。 */
+  _consumeDeploymentCarry() {
+    if (!this.meta || typeof this.meta.stashSnapshot !== 'function'
+      || typeof this.meta.consumeCarry !== 'function') return null;
+    const snap = this.meta.stashSnapshot();
+    const items = { ...(snap.items || {}) };
+    const attachments = snap.lastExtractedLoadout || {};
+    // 已装配件在仓库数量里也占一个实体；把它从普通背包清单中剔除，避免双扣。
+    for (const slots of Object.values(attachments)) {
+      for (const itemId of Object.values(slots || {})) {
+        if (!itemId || !items[itemId]) continue;
+        items[itemId]--;
+        if (items[itemId] <= 0) delete items[itemId];
+      }
+    }
+    if (!Object.keys(items).length && !Object.keys(attachments).length) return null;
+    const carry = this.meta.consumeCarry({ items, attachments });
+    if (carry) this.meta.persist();
+    return carry;
   }
 
   // ================================================================ 循环
@@ -988,12 +1063,20 @@ class Game {
     if (this._respawnTimer > 0 || !this.player) {
       // 正常路径
     }
+    if (this.weapons && typeof this.weapons.resetLoadout === 'function') this.weapons.resetLoadout();
+    if (this._nextTier && this._nextTier !== this.tier) {
+      this.tier = this._nextTier;
+      this.mapIndex = this.tier - 1;
+      this.loadMission(this.mapIndex, {});
+    }
+    this._nextTier = 0;
     this.player.respawn(this.findSpawn());
     this.player.health = this.player.maxHealth;
     this.player.shield = this.player.maxShield;
     this.enemies.clear();
     this.weapons.resetAmmo();
-    if (this.inventory) this.inventory.reset(this.world, (this.mapSeed || 1) ^ Date.now());
+    const deploymentCarry = this._consumeDeploymentCarry();
+    if (this.inventory) this.inventory.reset(this.world, (this.mapSeed || 1) ^ Date.now(), { carry: deploymentCarry });
     this._resetHealing();
     this.particles.clear();
     this.decals.clear();
@@ -1442,6 +1525,7 @@ class Game {
     // 敌人与导演
     this.enemies.update(dt, p);
     this.director.update(dt);
+    this.run.objectiveInteractDown = !!input.interactDown;
     this.run.update(dt, p);
 
     if (this.inventory) this.inventory.update(dt, p);
@@ -1526,7 +1610,10 @@ class Game {
       prompt = `[E] 拾取 ${name}${d.count > 1 ? ' ×' + d.count : ''}${effect ? ` — ${effect}` : ''}`;
     } else if (run.nearSupplyStation) prompt = '[E] 补满生命 / 护盾 / 弹药并打开改件货架';
     else if (run.nearObjective && !run.nearObjective.done) {
-      prompt = `占领中… ${Math.round(run.nearObjective.progress * 100)}%`;
+      const o = run.nearObjective;
+      prompt = o.type === 'destroy'
+        ? `射击摧毁目标… ${Math.round(o.progress * 100)}%`
+        : `[E] ${o.type === 'recover' ? '拿取物资' : (o.type === 'capture' ? '夺取设备' : '执行破坏')}… ${Math.round(o.progress * 100)}%`;
     } else if (run.phase === RUN_PHASE.EXTRACTING) {
       prompt = `撤离中 ${(run.extractProgress * 100).toFixed(0)}%`;
     } else if (run.phase === RUN_PHASE.EXTRACT_READY) {

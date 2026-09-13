@@ -808,25 +808,24 @@ group('G4 菜单：变体 / 键盘导航 / 点击 / 意图');
   eq('ArrowUp 回到首项后 Enter 触发 start_run', intents.length && intents[0].name, 'start_run');
 
   // 点击
-  // 注意：主菜单新增了「远征简报」一项，索引整体后移一位
-  //   0 开始远征 / 1 继续 / 2 远征简报 / 3 设置 / 4 操作说明 / 5 制作名单
+  // 2.0 主菜单：战役与局外军械库是真实入口，后续项目依次后移。
   intents.length = 0;
-  mainItems[3].click();
+  mainItems[5].click();
   eq('点击菜单项发出 open_settings', intents.length && intents[0].name, 'open_settings');
 
   // 计划简报项
   intents.length = 0;
-  mainItems[2].click();
+  mainItems[4].click();
   eq('点击「远征简报」发出 open_briefing', intents.length && intents[0].name, 'open_briefing');
 
   // 数字键
   intents.length = 0;
-  doc.dispatchEvent({ type: 'keydown', code: 'Digit5', key: '5' });
-  eq('数字键 5 触发 open_help', intents.length && intents[0].name, 'open_help');
+  doc.dispatchEvent({ type: 'keydown', code: 'Digit7', key: '7' });
+  eq('数字键 7 触发 open_help', intents.length && intents[0].name, 'open_help');
 
   intents.length = 0;
-  doc.dispatchEvent({ type: 'keydown', code: 'Digit6', key: '6' });
-  eq('数字键 6 触发 open_credits', intents.length && intents[0].name, 'open_credits');
+  doc.dispatchEvent({ type: 'keydown', code: 'Digit8', key: '8' });
+  eq('数字键 8 触发 open_credits', intents.length && intents[0].name, 'open_credits');
 
   // Esc
   intents.length = 0;

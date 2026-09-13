@@ -113,7 +113,12 @@ export class Run {
     if (this._offDie) this._offDie();
   }
 
-  setModifiers(mods) { this.mods = mods; }
+  setModifiers(mods) {
+    this.mods = mods;
+    const mul = mods && mods.meta && Number.isFinite(mods.meta.extractTimeMul)
+      ? mods.meta.extractTimeMul : 1;
+    this.extractRequired = Math.max(1.5, CFG.gameplay.extractHoldTime * mul);
+  }
 
   // ---------------------------------------------------------------- 开局
 
@@ -128,6 +133,8 @@ export class Run {
     this.headshots = 0;
     this.damageDealt = 0;
     this.damageTaken = 0;
+    // 每次开局重新应用永久撤离信标强化，避免上一局的读条进度/时长泄漏。
+    this.setModifiers(this.mods || null);
     this.heat = 0;
     this.combo = 0;
     this.comboTimer = 0;
@@ -217,8 +224,9 @@ export class Run {
       this.nearObjective = o;
       if (!o.done) {
         p._interactProgress = (p._interactProgress || 0);
-        if (p.state.grounded) {
-          // 占领速度受"停留"影响；destroy 类型需要"侵入"时间
+        // destroy 必须用武器打坏实体；其余任务必须按住交互执行夺取/破坏/回收，
+        // 不再只是走进圆圈站着等待读条。
+        if (p.state.grounded && o.type !== 'destroy' && this.objectiveInteractDown) {
           const rate = 1 / Math.max(2.0, 6.5 - this.tier * 0.35);
           o.progress = M.clamp01(o.progress + dt * rate);
           if (o.progress >= 1) {
@@ -241,6 +249,9 @@ export class Run {
     if (o.done) return;
     o.done = true;
     o.progress = 1;
+    const worldObjective = this.world && typeof this.world.objectives === 'function'
+      ? this.world.objectives().find((x) => x.id === o.id) : null;
+    if (worldObjective) { worldObjective.done = true; worldObjective.progress = 1; }
     this.stats.objectives++;
     const alloy = Math.round(CFG.gameplay.objectiveAlloy * (1 + (this.tier - 1) * 0.35)
       * (this.mods ? (this.mods.meta.alloyFindMul || 1) : 1));
@@ -249,6 +260,9 @@ export class Run {
     // 完成目标给一次升级机会
     this.pendingUpgradeOffer = true;
     Events.emit('objective:complete', { label: o.label, id: o.id });
+    if (o.type === 'recover' || o.type === 'capture') {
+      Events.emit('objective:loot', { id: o.id, type: o.type, itemId: 'intel_core' });
+    }
     Events.emit('audio:play', { name: 'objective_complete' });
     Events.emit('ui:message', {
       title: '目标完成', sub: `${o.label} —— 获得 ${alloy} 合金与一次改件选择`, kind: 'good',
@@ -264,6 +278,20 @@ export class Run {
     o.progress = M.clamp01(1 - o.hp / 100);
     if (o.hp <= 0) this._completeObjective(o);
     else this._emitObjectiveProgress();
+  }
+
+  /** 世界命中点附近的 destroy 目标会真实承受枪械伤害。 */
+  damageObjectiveAt(point, amount) {
+    if (!point) return false;
+    let best = null, bestD = Infinity;
+    for (const o of this.objectives) {
+      if (o.done || o.type !== 'destroy') continue;
+      const d = M.dist3(point, o.pos);
+      if (d <= Math.max(2.2, Math.min(4, o.radius || 3)) && d < bestD) { best = o; bestD = d; }
+    }
+    if (!best) return false;
+    this.damageObjective(best.id, Math.max(1, +amount || 1));
+    return true;
   }
 
   _emitObjectiveProgress() {

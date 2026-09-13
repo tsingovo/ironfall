@@ -42,9 +42,12 @@ const browserArgs = [
   '--disable-background-mode',
   '--disable-extensions',
   '--disable-features=OverscrollHistoryNavigation,Translate',
-  // 不使用 --kiosk / 浏览器 Fullscreen API：它们都会优先吃掉 Esc 并退出全屏。
-  // app + start-maximized 是无地址栏的独立游戏窗口，Esc 能稳定交给指针锁/游戏菜单。
-  '--start-maximized',
+  // Kiosk 使用无标题栏的游戏窗口，可从系统层消除 Alt+Space 左上角窗口菜单；
+  // 普通网页的 preventDefault 无权拦截这个 Windows 系统快捷键。
+  // 游戏本身不调用 Fullscreen API，因此 Esc 仍交给页面的暂停/设置状态机。
+  '--kiosk',
+  '--start-fullscreen',
+  '--disable-pinch',
 ];
 
 if (process.argv.includes('--dry-run')) {
@@ -163,7 +166,7 @@ async function ensureServer() {
 try {
   await ensureServer();
   stopStaleDedicatedBrowser();
-  log(`正在打开独立游戏窗口：${browser}`);
+  log(`正在打开无边框独立游戏窗口：${browser}`);
   const app = spawn(browser, browserArgs, {
     cwd: root,
     detached: true,

@@ -17,6 +17,7 @@ import * as Events from './core/events.js';
 import * as Geo from './engine/geometry.js';
 import { normalizeMods } from './player.js';
 import { ProjectilePool } from './fx/projectiles.js';
+import { LOOT_DEFS } from './inventory.js';
 
 // ================================================================ 武器数据
 
@@ -820,14 +821,16 @@ export class WeaponSystem {
 
   _magSize(def) {
     const equipped = this.lootAttachments && this.lootAttachments[def.id];
-    const lootBonus = equipped && equipped.mag === 'light_mag' ? 5
-      : (equipped && equipped.mag === 'heavy_mag' ? 5 : 0);
+    const lootDef = equipped && equipped.mag ? LOOT_DEFS[equipped.mag] : null;
+    const lootBonus = lootDef && lootDef.attachment ? (+lootDef.attachment.magAdd || 0) : 0;
     return Math.max(1, Math.round(def.magSize + (this.mods.weapon.magSizeAdd || 0) + lootBonus));
   }
 
   _chargeTime(def) {
     const equipped = this.lootAttachments && this.lootAttachments[def.id];
-    return Math.max(0.05, (def.chargeTime || 0) * (equipped && equipped.charge === 'sniper_cell' ? 0.72 : 1));
+    const lootDef = equipped && equipped.charge ? LOOT_DEFS[equipped.charge] : null;
+    const mul = lootDef && lootDef.attachment ? (+lootDef.attachment.chargeTimeMul || 1) : 1;
+    return Math.max(0.05, (def.chargeTime || 0) * mul);
   }
 
   _hasOptic(def) {
@@ -842,15 +845,10 @@ export class WeaponSystem {
 
   /** 背包双击或拖到武器槽时调用；targetWeaponId 可强制指定拖放目标。 */
   installAttachment(itemId, targetWeaponId = null) {
-    const fixed = itemId === 'light_mag' ? { weaponId: 'r99', slot: 'mag', compatible: ['r99'] }
-      : itemId === 'heavy_mag' ? { weaponId: 'flatline', slot: 'mag', compatible: ['flatline'] }
-        : itemId === 'sniper_cell' ? { weaponId: 'sentinel', slot: 'charge', compatible: ['sentinel'] }
-          : itemId === 'tactical_knife' ? { weaponId: 'melee', slot: 'melee', compatible: ['melee'] }
-            : itemId === 'optic_1x' ? {
-            weaponId: ['r99', 'flatline', 'volt', 'peacekeeper'].includes(this.current.id) ? this.current.id : 'r99',
-            slot: 'optic', compatible: ['r99', 'flatline', 'volt', 'peacekeeper'],
-          } : null;
-    const spec = fixed ? { ...fixed } : null;
+    const item = LOOT_DEFS[itemId];
+    const compatible = item && Array.isArray(item.compatible) ? item.compatible : [];
+    const preferred = compatible.includes(this.current.id) ? this.current.id : compatible[0];
+    const spec = item && item.equipSlot ? { weaponId: preferred, slot: item.equipSlot, compatible } : null;
     if (spec && targetWeaponId) {
       if (!spec.compatible.includes(targetWeaponId)) return { ok: false, reason: 'incompatible', weaponId: targetWeaponId };
       spec.weaponId = targetWeaponId;
@@ -858,6 +856,12 @@ export class WeaponSystem {
     if (!spec || !this.lootAttachments[spec.weaponId]) return { ok: false, reason: 'incompatible' };
     const equipped = this.lootAttachments[spec.weaponId];
     if (equipped[spec.slot] === itemId) return { ok: false, reason: 'equipped', weaponId: spec.weaponId, slot: spec.slot };
+    const previousDef = equipped[spec.slot] ? LOOT_DEFS[equipped[spec.slot]] : null;
+    const newRank = item && item.attachment ? (+item.attachment.rank || 0) : 0;
+    const oldRank = previousDef && previousDef.attachment ? (+previousDef.attachment.rank || 0) : 0;
+    if (previousDef && oldRank >= newRank && newRank > 0) {
+      return { ok: false, reason: 'lower_rank', weaponId: spec.weaponId, slot: spec.slot, equipped: equipped[spec.slot] };
+    }
     const def = WEAPONS[spec.weaponId];
     const beforeMag = this._magSize(def);
     const replaced = equipped[spec.slot];
@@ -937,6 +941,30 @@ export class WeaponSystem {
     return true;
   }
 
+  /**
+   * 将拾取到的枪械装入真实武器槽。3 号槽永久保留近战；哨兵优先进入
+   * 4 号额外武器槽，其余枪械进入当前的 1/2 号槽。每把枪在 state Map 中
+   * 保留独立弹匣、充能与配件状态，因此这不是只改 HUD 名称。
+   */
+  installLootWeapon(id, targetSlot = null) {
+    const def = WEAPONS[id];
+    if (!def || def.class === 'melee') return { ok: false, reason: 'invalid_weapon' };
+    const explicitlyTargeted = Number.isInteger(targetSlot);
+    let slot = explicitlyTargeted ? targetSlot : -1;
+    if (explicitlyTargeted && slot === 2) return { ok: false, reason: 'melee_reserved' };
+    if (slot < 0 || slot >= this.slots.length) {
+      slot = id === 'sentinel' ? 3 : ([0, 1].includes(this.slotIndex) ? this.slotIndex : 1);
+    }
+    const existingSlot = this.slots.findIndex(s => s.id === id);
+    if (existingSlot >= 0) return { ok: false, reason: 'equipped', weaponId: id, slot: existingSlot };
+    const replaced = this.slots[slot].id;
+    this.slots[slot] = { id };
+    if (!this.state.has(id)) this.state.set(id, this._newState(id));
+    if (slot === this.slotIndex) this._equip(id, true);
+    Events.emit('weapon:loot-equipped', { weaponId: id, slot, replaced });
+    return { ok: true, weaponId: id, slot, replaced };
+  }
+
   _equip(id, instant) {
     const idx = this.slots.findIndex((s) => s.id === id);
     if (idx >= 0) this.slotIndex = idx;
@@ -1013,6 +1041,15 @@ export class WeaponSystem {
       st.boltDuration = 0;
       st.chambered = true;
     }
+  }
+
+  /** 新部署恢复制式四槽；撤离获得的稀有枪械由仓库作为物品重新带入。 */
+  resetLoadout() {
+    this.slots = [{ id: 'r99' }, { id: 'flatline' }, { id: 'melee' }, { id: 'sentinel' }];
+    this.slotIndex = 0;
+    this._pendingEquip = null;
+    this._equip('r99', true);
+    return this.slots.map((s) => s.id);
   }
 
   /** 野战补给：补满所有武器弹匣与备弹，并取消未完成的换弹。 */
@@ -1538,7 +1575,7 @@ export class WeaponSystem {
       res.dist = worldHit.t;
       Events.emit('hit:world', {
         point: worldHit.point, normal: worldHit.normal, kind: worldHit.kind,
-        flags: worldHit.flags,
+        flags: worldHit.flags, damage: dmg,
       });
       // 穿透：命中世界后按剩余穿透数继续（简化：只在敌人穿透时生效）
     } else {

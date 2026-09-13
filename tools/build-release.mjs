@@ -108,75 +108,35 @@ function makeZip(files) {
 // 唯一的区别：游戏本体是构建好的单文件 IRONFALL.html（开发仓库里是 index.html + src/）。
 
 const README_TXT = `IRONFALL · 钢铁远征  v${pkgVersion}
-工业星际远征背景的第一人称射击 Roguelike
 ================================================
 
-【怎么玩】
+【启动】
+解压后双击「开始游戏.cmd」。首次运行若没有 Node.js，脚本会把便携运行环境下载到
+%LOCALAPPDATA%\\IRONFALL\\runtime。游戏随后在独立、无边框、无地址栏的全屏窗口运行。
 
-  解压后双击「开始游戏.cmd」。
+需要：Windows 10/11、Chrome 或 Edge、WebGL2。首次补齐运行环境时需要联网，之后可离线。
 
-  它会：
-    1. 检查你的电脑有没有 Node.js；没有就自动下载一个便携版
-       （只下载这一次，解压到 %LOCALAPPDATA%\\IRONFALL\\runtime，
-        不需要管理员权限，不改动系统设置）
-    2. 在本机起一个游戏服务器（浏览器安全策略要求，不能直接用文件打开）
-    3. 用一个**独立游戏窗口**打开游戏 —— 没有标签栏和地址栏，
-       所以按 Ctrl+W 之类不会把游戏关掉
+【核心操作】
+WASD 移动；Shift 疾跑；Ctrl/C 滑铲；Space 跳跃/滑铲跳；左 Alt Dash；Q 抓钩
+鼠标左键开火；右键瞄准；R 换弹；1/2/3/4 切武器；B 哨兵整匣充能
+5 治疗（长按轮盘）；Tab 背包；E 交互/拾取；V 近战；M 地图；Esc 设置/返回
 
-  需要联网：只有第一次运行需要（下载运行环境）。之后就完全离线了。
+【2.0】
+· 十关战役：成功撤离解锁下一关，主菜单可选择已解锁任务
+· 六种敌人、七把枪、额外枪械世界掉落与真实换装
+· 6×4 背包：单击使用，拖动装备/整理，右键或拖出丢弃
+· 配件 I/II/III、高级替换、卸下回包、鼠标悬停显示真实数值
+· 撤离物资进入局外仓库并在下次部署带入；阵亡丢失
+· 十类永久局外改件，使用远征点数购买并真实生效
+· Apex 风格滑铲跳、Titanfall 2 风格墙跑、双方牵引抓钩
+· 四种无限治疗道具，均有读条、减速、打断、动作与三阶段音效
 
-【需要什么】
+Esc 在游玩中打开设置并暂停，菜单中关闭并恢复。独立窗口不调用网页 Fullscreen API，
+不会因 Esc 小窗化；未锁鼠标时返回游戏 1 秒后自动重试。
 
-  · Windows 10 / 11
-  · Chrome 或 Edge（推荐，需要 WebGL2）
-  · 独立显卡或较新的集成显卡，建议 1080p 以上分辨率
-  · 首次运行需要联网（约 30 MB 下载）
-
-【第一次进入游戏】
-
-  1. 首屏是开始界面 → 按 1 或点「开始远征」
-  2. 画面中央出现「点击进入战场」→ 点一下画面
-     （浏览器要求必须点一下才能锁定鼠标，这是安全限制）
-  3. 鼠标锁定后即可自由转视角，系统光标会隐藏，屏幕上只剩准心
-
-【基本操作】
-
-  W A S D      移动
-  Shift        疾跑
-  Space        跳跃 / 二段跳（贴墙时按住可转成墙爬）
-  Ctrl / C     蹲伏 / 滑铲
-  Q            冲刺
-  鼠标右键 / E  抓钩
-  鼠标左键 / 中键  开火 / 开镜
-  R / G        换弹 / 切枪
-  F            互动（补给站、撤离点）
-  Esc          菜单（不暂停游戏，视角仍可自由转动）
-  Tab          直接打开设置
-  F3           调试面板（帧率 / draw call）
-
-  更多键位见游戏内「操作说明」。
-
-【关于 Ctrl+W】
-
-  Ctrl+W / Ctrl+T / F11 是浏览器保留快捷键，网页无权拦截。
-  本游戏用独立 App 窗口运行（没有标签栏），所以 Ctrl+W 不会关掉游戏。
-
-  想换服务器端口：命令行里先 set IRONFALL_PORT=9000 再运行启动器。
-
-【存档】
-
-  进度保存在浏览器的本地存储里。
-  注意：普通浏览器模式（tools\\serve.mjs）和独立窗口模式使用不同的
-  浏览器配置目录，所以两种方式的存档是分开的。
-
-【这是什么】
-
-  纯 WebGL2 + 原生 ES Modules 实现，零第三方依赖、零构建步骤。
-  运动手感参照 Apex Legends 并进一步强化（蹬墙跑、墙爬、抓钩摆荡、
-  滑铲下坡加速、连跳），武器手感参照 R-99。
-
-  源码与文档：https://github.com/tsingovo/ironfall
-  许可：MIT
+存档位于 IRONFALL 专用浏览器配置的 localStorage；2.0 自动迁移旧版数据。
+源码与完整说明：https://github.com/tsingovo/ironfall
+许可：MIT
 `;
 
 // ---------------------------------------------------------------- 主流程
@@ -192,6 +152,8 @@ async function main() {
   const launcher = await readFile(join(ROOT, 'tools/launcher-release.cmd'));
   const launchApp = await readFile(join(ROOT, 'tools/launch-app.mjs'));
   const serveSingle = await readFile(join(ROOT, 'tools/serve-single.mjs'));
+  const releaseNotes = existsSync(join(DIST, 'RELEASE_NOTES.md'))
+    ? await readFile(join(DIST, 'RELEASE_NOTES.md')) : Buffer.from('IRONFALL 2.0', 'utf8');
   const enc = (s) => Buffer.from(s.replace(/\r?\n/g, '\r\n'), 'utf8');
 
   const files = [
@@ -199,6 +161,7 @@ async function main() {
     { name: 'IRONFALL.html', data: html },
     { name: '使用说明.txt', data: enc(README_TXT) },
     { name: 'LICENSE', data: license },
+    { name: 'RELEASE_NOTES.md', data: releaseNotes },
     { name: 'tools/launch-app.mjs', data: launchApp },
     { name: 'tools/serve-single.mjs', data: serveSingle },
   ];

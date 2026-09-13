@@ -1766,6 +1766,34 @@
   color: var(--hud-warn);
 }
 
+.menu-item--disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+  filter: grayscale(0.7);
+}
+
+.menu-panel--campaign .menu-list,
+.menu-panel--armory .menu-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  max-height: 46vh;
+  overflow-y: auto;
+  padding-right: 6px;
+}
+
+.menu-panel--campaign .menu-item,
+.menu-panel--armory .menu-item {
+  font-size: 15px;
+  padding: 7px 9px;
+}
+
+.menu-panel--armory .menu-item-sub {
+  max-width: 47%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .menu-item-key {
   width: 20px;
   font-size: 12px;

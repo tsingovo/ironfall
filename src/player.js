@@ -574,7 +574,8 @@ export class Player {
     const n = this.world.groundNormal(this.pos[0], this.pos[2], GROUND_N);
     const dx = this.vel[0] / speed, dz = this.vel[2] / speed;
     // 坡面沿运动方向的切向 y 分量：坡面法线点乘水平方向得到坡的倾斜
-    return -(n[0] * dx + n[2] * dz) / Math.max(0.2, n[1]);
+    // groundNormal 的 XZ 分量指向高度下降方向（n = normalize(-dh/dx,1,-dh/dz)）。
+    return (n[0] * dx + n[2] * dz) / Math.max(0.2, n[1]);
   }
 
   // ---------------------------------------------------------------- 地面移动
@@ -630,8 +631,8 @@ export class Player {
     if (Math.hypot(n[0], n[2]) < 0.035) return;
     // 切向重力方向（水平分量指向下坡）
     const g = move.gravity;
-    const slopeX = -n[0] * n[1] * g;
-    const slopeZ = -n[2] * n[1] * g;
+    const slopeX = n[0] * n[1] * g;
+    const slopeZ = n[2] * n[1] * g;
     let k = (forceOverride != null ? forceOverride : move.slopeAccel) * (mods.slopeAccelMul || 1);
     if (k <= 0) return;
     // 只在下坡时施加（用速度方向判断）
@@ -663,13 +664,22 @@ export class Player {
       this.vel[0] *= k; this.vel[2] *= k;
     }
 
-    // 下坡助推
-    const slope = this._slopeAlongVelocity();
-    if (slope > 0.02) {
-      const boost = move.slideDownhillBoost * slope * (mods.slideDownhillMul || 1);
-      const dx = this.vel[0] / (speed || 1), dz = this.vel[2] / (speed || 1);
-      this.vel[0] += dx * boost * dt;
-      this.vel[2] += dz * boost * dt;
+    // 贴地滑铲的速度必须位于真实坡面切面内。旧实现只沿“已有水平速度”助推，
+    // 且每帧另加负 Y 重力；跨坡折时扫掠球会把整段水平位移一起截断，形成卡脚。
+    // 现在以地面法线求最陡下降方向，并让垂直速度恰好满足 dot(v,n)=0。
+    const n = s.groundNormal;
+    if (s.grounded && n[1] > 0.55) {
+      this.vel[1] = -(n[0] * this.vel[0] + n[2] * this.vel[2]) / Math.max(0.2, n[1]);
+      const slopeMag = Math.hypot(n[0], n[2]);
+      const downhillCap = move.slideDownhillMaxSpeed || move.maxSpeed;
+      if (slopeMag > 0.035 && hspeed(this.vel) < downhillCap) {
+        const boost = move.slideDownhillBoost * (mods.slideDownhillMul || 1);
+        // normal.xz 就是真实最陡下坡方向；不再错误地沿旧速度方向“凭空推”。
+        this.vel[0] += n[0] * boost * dt;
+        this.vel[2] += n[2] * boost * dt;
+      }
+      // 助推改变水平分量后再次投影，保证最终积分位移仍严格贴合坡面。
+      this.vel[1] = -(n[0] * this.vel[0] + n[2] * this.vel[2]) / Math.max(0.2, n[1]);
     }
 
     // 滑铲中的转向：允许有限度地改变方向
@@ -693,11 +703,14 @@ export class Player {
       }
     }
 
-    // 滑铲仍受重力，但贴地时被地面吸收
-    this.vel[1] -= move.gravity * 0.5 * dt;
+    // 转向同样会改变水平分量；积分前作最终切面约束，避免斜向操控时重新压坡。
+    if (s.grounded && n[1] > 0.55) {
+      this.vel[1] = -(n[0] * this.vel[0] + n[2] * this.vel[2]) / Math.max(0.2, n[1]);
+    }
+
+    // 离地后才恢复重力；贴地时负 Y 已由坡面切向投影给出，不能再把胶囊压进地面。
+    if (!s.grounded) this.vel[1] -= move.gravity * 0.5 * dt;
     this._gravityHandled = true;
-    // 额外的下坡切向力
-    this._applySlopeForce(dt, mods, move.slideDownhillBoost * 0.5);
   }
 
   // ---------------------------------------------------------------- 空中
@@ -1448,7 +1461,7 @@ export class Player {
       return;
     }
     const s = this.state;
-    const delta = T_A;
+    const delta = T_E;
     delta[0] = this.vel[0] * dt;
     delta[1] = this.vel[1] * dt;
     delta[2] = this.vel[2] * dt;
@@ -1458,21 +1471,27 @@ export class Player {
     const prevY = this.pos[1];
 
     if (dist > 1e-5) {
-      // 用"身体中部"作为扫掠球心，能覆盖大部分碰撞情形
-      const center = T_B;
-      center[0] = this.pos[0];
-      center[1] = this.pos[1] + this.currentHeight * 0.5;
-      center[2] = this.pos[2];
-      // 扫掠只需覆盖真实胶囊半径；旧版把身体高度的 42% 当作球半径
-      // （约 0.76m），导致离墙很远就被判接触，反复推出后出现“粘墙”。
-      const sweepR = this.radius * 1.05;
-      const hit = this.world.sweepSphere(center, sweepR, delta, {});
-      if (hit.hit) {
+      // 滑铲允许在首次命中可行走坡面/坡折后继续消费剩余切向位移。
+      // 普通移动维持一次 sweep，避免改变既有手感与碰撞成本。
+      const sweeps = s.sliding ? 2 : 1;
+      for (let sweepIndex = 0; sweepIndex < sweeps; sweepIndex++) {
+        const segmentDist = Math.hypot(delta[0], delta[1], delta[2]);
+        if (segmentDist <= 1e-5) break;
+        // 用"身体中部"作为扫掠球心，能覆盖大部分碰撞情形
+        const center = T_B;
+        center[0] = this.pos[0];
+        center[1] = this.pos[1] + this.currentHeight * 0.5;
+        center[2] = this.pos[2];
+        // 扫掠只需覆盖真实胶囊半径；旧版把身体高度的 42% 当作球半径
+        // （约 0.76m），导致离墙很远就被判接触，反复推出后出现“粘墙”。
+        const sweepR = this.radius * 1.05;
+        const hit = this.world.sweepSphere(center, sweepR, delta, {});
+        if (hit.hit) {
         // 退到接触点（留一点余量）
-        const back = Math.max(0, hit.t - 0.012);
-        this.pos[0] += delta[0] / dist * back;
-        this.pos[1] += delta[1] / dist * back;
-        this.pos[2] += delta[2] / dist * back;
+        const back = Math.max(0, Math.min(segmentDist, hit.t - 0.012));
+        this.pos[0] += delta[0] / segmentDist * back;
+        this.pos[1] += delta[1] / segmentDist * back;
+        this.pos[2] += delta[2] / segmentDist * back;
         // 仅在速度朝向表面时裁剪；若玩家正主动离墙，不能把离墙速度
         // 也投影掉，否则会在贴墙后无法脱离。
         const into = this.vel[0] * hit.normal[0]
@@ -1482,10 +1501,28 @@ export class Player {
           clipVelocity(this.vel, hit.normal, clipped, 0);
           this.vel[0] = clipped[0]; this.vel[1] = clipped[1]; this.vel[2] = clipped[2];
         }
-      } else {
-        this.pos[0] += delta[0];
-        this.pos[1] += delta[1];
-        this.pos[2] += delta[2];
+        if (sweepIndex + 1 < sweeps) {
+          // 余量投影到碰撞切面后继续扫掠。使用本段长度而不是首段 dist，
+          // 因此连续坡折不会重复走过已经消费的距离。
+          const usedFrac = M.clamp(back / segmentDist, 0, 1);
+          delta[0] *= 1 - usedFrac;
+          delta[1] *= 1 - usedFrac;
+          delta[2] *= 1 - usedFrac;
+          const intoDelta = delta[0] * hit.normal[0]
+            + delta[1] * hit.normal[1] + delta[2] * hit.normal[2];
+          if (intoDelta < 0) {
+            delta[0] -= hit.normal[0] * intoDelta;
+            delta[1] -= hit.normal[1] * intoDelta;
+            delta[2] -= hit.normal[2] * intoDelta;
+          }
+          continue;
+        }
+        } else {
+          this.pos[0] += delta[0];
+          this.pos[1] += delta[1];
+          this.pos[2] += delta[2];
+        }
+        break;
       }
     }
 
@@ -1506,13 +1543,23 @@ export class Player {
       groundNormal[2] = res.groundNormal[2];
       s.groundKind = 'contact';
     } else {
-      const probe = this.world.probeGround(this.pos, this.radius, this.currentHeight, CFG.move.groundSnapDist + 0.06);
+      const probeDist = s.sliding
+        ? Math.max(CFG.move.groundSnapDist, CFG.move.slideGroundSnapDist || 0) + 0.06
+        : CFG.move.groundSnapDist + 0.06;
+      const probe = this.world.probeGround(this.pos, this.radius, this.currentHeight, probeDist);
       if (probe.grounded && this.vel[1] <= 0.6) {
         grounded = true;
         groundNormal[0] = probe.groundNormal[0];
         groundNormal[1] = probe.groundNormal[1];
         groundNormal[2] = probe.groundNormal[2];
         s.groundKind = 'probe';
+        // 滑铲高速经过下坡坡折时主动向下贴面；普通移动继续沿用原来的探测判定。
+        // probe 的起点比胶囊底高 0.02m，故只扣除这部分以保留接触余量。
+        if (s.sliding) {
+          const snap = Math.max(0, Math.min(
+            CFG.move.slideGroundSnapDist || CFG.move.groundSnapDist, probe.distance - 0.02));
+          this.pos[1] -= snap;
+        }
       } else {
         s.groundKind = 'none';
       }
@@ -1575,8 +1622,8 @@ export class Player {
       // 沿坡面下滑
       const n = groundNormal;
       const g = CFG.move.gravity;
-      this.vel[0] += -n[0] * n[1] * g * dt * 1.4;
-      this.vel[2] += -n[2] * n[1] * g * dt * 1.4;
+      this.vel[0] += n[0] * n[1] * g * dt * 1.4;
+      this.vel[2] += n[2] * n[1] * g * dt * 1.4;
       if (this.vel[1] > -1) this.vel[1] = -1;
     }
 

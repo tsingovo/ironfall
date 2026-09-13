@@ -53,7 +53,7 @@ export const LOOT_DEFS = {
     ],
   },
   light_mag: {
-    id: 'light_mag', name: '轻型扩容弹匣', category: '配件', rarity: 'rare', stack: 2,
+    id: 'light_mag', name: '轻型扩容弹匣 II', category: '配件', rarity: 'rare', stack: 2, attachment: { slot: 'mag', rank: 2, magAdd: 5 },
     desc: '为 R-99 增加 5 发弹容量，基础弹匣由 24 发提升至 29 发。',
     effect: 'R-99 弹匣 +5', usage: '拖到 R-99 卡片或单击安装；把已装配件拖回空格或右键即可卸下。', equipSlot: 'mag', compatible: ['r99'],
     model: [
@@ -63,7 +63,7 @@ export const LOOT_DEFS = {
     ],
   },
   heavy_mag: {
-    id: 'heavy_mag', name: '重型扩容弹匣', category: '配件', rarity: 'epic', stack: 2,
+    id: 'heavy_mag', name: '重型扩容弹匣 II', category: '配件', rarity: 'rare', stack: 2, attachment: { slot: 'mag', rank: 2, magAdd: 5 },
     desc: '为平行步枪增加 5 发弹容量，基础弹匣由 35 发提升至 40 发。',
     effect: '平行步枪弹匣 +5', usage: '拖到平行步枪卡片或单击安装；把已装配件拖回空格或右键即可卸下。', equipSlot: 'mag', compatible: ['flatline'],
     model: [
@@ -73,14 +73,52 @@ export const LOOT_DEFS = {
     ],
   },
   sniper_cell: {
-    id: 'sniper_cell', name: '狙击充能电芯', category: '配件', rarity: 'epic', stack: 3,
-    desc: '改良哨兵供能回路，使按 B 后的整匣充能读条缩短 28%。',
-    effect: '哨兵充能时间 ×0.72', usage: '拖到哨兵狙击步枪卡片或单击安装；可拖回背包卸下。', equipSlot: 'charge', compatible: ['sentinel'],
+    id: 'sniper_cell', name: '狙击充能电芯 II', category: '配件', rarity: 'rare', stack: 3, attachment: { slot: 'charge', rank: 2, chargeTimeMul: 0.78 },
+    desc: '改良哨兵供能回路，使按 B 后的整匣充能读条缩短 22%。',
+    effect: '哨兵充能时间 ×0.78', usage: '拖到哨兵狙击步枪卡片或单击安装；可拖回背包卸下。', equipSlot: 'charge', compatible: ['sentinel'],
     model: [
       { shape: 'cylinder', pos: [0, 0.11, 0], size: [0.22, 0.22, 0.22], color: [0.025, 0.08, 0.22] },
       { shape: 'sphere', pos: [0, 0.12, 0], size: [0.12, 0.12, 0.12], color: [0.32, 0.72, 1.0], emissive: 0.8 },
       { shape: 'box', pos: [0, 0.23, 0], size: [0.08, 0.04, 0.18], color: [0.12, 0.30, 0.58] },
     ],
+  },
+  light_mag_1: {
+    id: 'light_mag_1', name: '轻型扩容弹匣 I', category: '配件', rarity: 'common', stack: 2,
+    desc: '一级轻型弹匣，为 R-99 增加 3 发弹容量，基础 24 发提升至 27 发。', effect: 'R-99 弹匣 +3',
+    usage: '拖到 R-99 卡片安装；高级弹匣可替换它，卸下后回到背包。', equipSlot: 'mag', compatible: ['r99'],
+    attachment: { slot: 'mag', rank: 1, magAdd: 3 },
+    model: [{ shape: 'box', pos: [0, .15, 0], size: [.15, .28, .10], color: [.55, .60, .64] }],
+  },
+  light_mag_3: {
+    id: 'light_mag_3', name: '轻型扩容弹匣 III', category: '配件', rarity: 'epic', stack: 2,
+    desc: '三级轻型弹匣，为 R-99 增加 8 发弹容量，基础 24 发提升至 32 发。', effect: 'R-99 弹匣 +8',
+    usage: '拖到 R-99 卡片安装；替换低级弹匣时旧配件会自动回到背包。', equipSlot: 'mag', compatible: ['r99'],
+    attachment: { slot: 'mag', rank: 3, magAdd: 8 },
+    model: [{ shape: 'box', pos: [0, .16, 0], size: [.18, .32, .12], color: [.50, .22, .78], emissive: .18 }],
+  },
+  heavy_mag_1: {
+    id: 'heavy_mag_1', name: '重型扩容弹匣 I', category: '配件', rarity: 'common', stack: 2,
+    desc: '一级重型弹匣，为平行步枪增加 3 发弹容量，基础 35 发提升至 38 发。', effect: '平行步枪弹匣 +3',
+    usage: '拖到平行步枪卡片安装；高级弹匣可替换它，卸下后回到背包。', equipSlot: 'mag', compatible: ['flatline'],
+    attachment: { slot: 'mag', rank: 1, magAdd: 3 }, model: [{ shape: 'box', pos: [0, .15, 0], size: [.18, .28, .12], color: [.42, .38, .32] }],
+  },
+  heavy_mag_3: {
+    id: 'heavy_mag_3', name: '重型扩容弹匣 III', category: '配件', rarity: 'epic', stack: 2,
+    desc: '三级重型弹匣，为平行步枪增加 8 发弹容量，基础 35 发提升至 43 发。', effect: '平行步枪弹匣 +8',
+    usage: '拖到平行步枪卡片安装；替换低级弹匣时旧配件会自动回到背包。', equipSlot: 'mag', compatible: ['flatline'],
+    attachment: { slot: 'mag', rank: 3, magAdd: 8 }, model: [{ shape: 'box', pos: [0, .16, 0], size: [.22, .32, .14], color: [.58, .25, .78], emissive: .16 }],
+  },
+  sniper_cell_1: {
+    id: 'sniper_cell_1', name: '狙击充能电芯 I', category: '配件', rarity: 'common', stack: 3,
+    desc: '一级供能电芯，使哨兵整匣充能读条缩短 12%，强化弹伤害规则保持不变。', effect: '哨兵充能时间 ×0.88',
+    usage: '拖到哨兵卡片安装；高级电芯可替换它，卸下后回到背包。', equipSlot: 'charge', compatible: ['sentinel'],
+    attachment: { slot: 'charge', rank: 1, chargeTimeMul: .88 }, model: [{ shape: 'sphere', pos: [0, .12, 0], size: [.18, .18, .18], color: [.32, .58, .72], emissive: .35 }],
+  },
+  sniper_cell_3: {
+    id: 'sniper_cell_3', name: '狙击充能电芯 III', category: '配件', rarity: 'epic', stack: 3,
+    desc: '三级供能电芯，使哨兵整匣充能读条缩短 32%，强化弹伤害规则保持不变。', effect: '哨兵充能时间 ×0.68',
+    usage: '拖到哨兵卡片安装；替换低级电芯时旧配件会自动回到背包。', equipSlot: 'charge', compatible: ['sentinel'],
+    attachment: { slot: 'charge', rank: 3, chargeTimeMul: .68 }, model: [{ shape: 'sphere', pos: [0, .12, 0], size: [.23, .23, .23], color: [.48, .24, 1], emissive: .85 }],
   },
   optic_1x: {
     id: 'optic_1x', name: '1× 全息瞄具', category: '瞄具', rarity: 'rare', stack: 1,
@@ -107,6 +145,12 @@ export const LOOT_DEFS = {
       { shape: 'box', pos: [0.035, 0.165, -0.23], size: [0.018, 0.022, 0.27], rot: [-0.08, 0, 0], color: [0.92, 0.97, 1.0], emissive: 0.18 },
     ],
   },
+  weapon_r99: weaponLoot('weapon_r99', 'R-99 冲锋枪', 'r99', 'rare', '高射速轻型冲锋枪，24 发基础弹匣，拾取后可装备到主武器或副武器槽。', [.76, .82, .88]),
+  weapon_flatline: weaponLoot('weapon_flatline', '平行步枪', 'flatline', 'rare', '稳定的重型突击步枪，单发 22 点伤害，拾取后可装备到主武器或副武器槽。', [.30, .25, .20]),
+  weapon_volt: weaponLoot('weapon_volt', 'Volt 冲锋枪', 'volt', 'epic', '能量冲锋枪，拥有 35 发弹匣与低后坐，拾取后可装备并真实开火。', [.18, .62, .82]),
+  weapon_peacekeeper: weaponLoot('weapon_peacekeeper', '和平捍卫者霰弹枪', 'peacekeeper', 'epic', '近距离高爆发泵动霰弹枪，6 发弹匣，拾取后可装备并发射多枚弹丸。', [.36, .68, .62]),
+  weapon_longbow: weaponLoot('weapon_longbow', '长弓精确步枪', 'longbow', 'epic', '中远距离精确射手步枪，5 发弹匣，拾取后可装备并使用独立弹药状态开火。', [.30, .36, .52]),
+  weapon_sentinel: weaponLoot('weapon_sentinel', '哨兵狙击步枪', 'sentinel', 'legendary', '4 倍镜栓动狙击步枪，可整匣充能强化，适合装备到额外武器槽。', [.08, .18, .48]),
   armor_plate: {
     id: 'armor_plate', name: '复合装甲板', category: '护甲', rarity: 'epic', stack: 3,
     desc: '一次性护甲升级材料。单击消耗 1 块，永久增加本次远征 25 点护盾上限并补满新增护盾格。',
@@ -129,6 +173,19 @@ export const LOOT_DEFS = {
     ],
   },
 };
+
+function weaponLoot(id, name, weaponId, rarity, desc, color) {
+  return {
+    id, name, weaponId, category: '武器', rarity, stack: 1, desc,
+    effect: `装备 ${name} · 保留独立弹匣与射击数据`,
+    usage: '单击自动装备，或拖到 1/2/4 号武器卡片；被替换武器会回到背包。',
+    model: [
+      { shape: 'box', pos: [0, .16, 0], size: [.16, .18, .68], color },
+      { shape: 'box', pos: [0, .16, -.41], size: [.07, .07, .28], color: [.10, .12, .14] },
+      { shape: 'box', pos: [.08, .05, .05], size: [.07, .20, .13], color: [.14, .16, .18] },
+    ],
+  };
+}
 
 const LOOT_IDS = Object.keys(LOOT_DEFS);
 const RARITY_COLOR = {
@@ -156,7 +213,7 @@ export class InventorySystem {
     this._buildUI();
   }
 
-  reset(world, seed = 1) {
+  reset(world, seed = 1, opts = {}) {
     this.slots.fill(null);
     this.drops.length = 0;
     this.nearDrop = null;
@@ -168,7 +225,79 @@ export class InventorySystem {
     this.add('syringe', 1);
     this.add('shield_cell', 1);
     this.seedWorldLoot(world, seed);
+    if (opts && opts.carry) this.importCarry(opts.carry);
     this.renderUI();
+  }
+
+  /** 导出撤离时可带出的有限物资，以及当前四个武器槽实际安装的配件。 */
+  exportCarry() {
+    const totals = new Map();
+    for (const s of this.slots) {
+      const def = s && LOOT_DEFS[s.itemId];
+      if (!def || def.infinite || !Number.isFinite(s.count) || s.count <= 0) continue;
+      totals.set(s.itemId, (totals.get(s.itemId) || 0) + Math.floor(s.count));
+    }
+    const attachments = {};
+    const equippedIds = new Set((this.weapons && this.weapons.slots || []).map(s => s && s.id).filter(Boolean));
+    // 制式四槽无需占仓库；远征中换上的稀有枪械则作为真实战利品带出。
+    for (const weaponId of equippedIds) {
+      if (!['r99', 'flatline', 'melee', 'sentinel'].includes(weaponId) && LOOT_DEFS[`weapon_${weaponId}`]) {
+        totals.set(`weapon_${weaponId}`, (totals.get(`weapon_${weaponId}`) || 0) + 1);
+      }
+    }
+    if (this.weapons && typeof this.weapons.getAttachments === 'function') {
+      for (const weaponId of equippedIds) {
+        for (const [slot, itemId] of Object.entries(this.weapons.getAttachments(weaponId))) {
+          if (itemId && LOOT_DEFS[itemId] && LOOT_DEFS[itemId].equipSlot === slot) {
+            if (!attachments[weaponId]) attachments[weaponId] = {};
+            attachments[weaponId][slot] = itemId;
+          }
+        }
+      }
+    }
+    return { version: 1, items: [...totals].map(([itemId, count]) => ({ itemId, count })), attachments };
+  }
+
+  /** 清除部署物资而保留四种无限战术补给。 */
+  clearFiniteCarry() {
+    let removed = 0;
+    for (let i = 0; i < this.slots.length; i++) {
+      const s = this.slots[i], def = s && LOOT_DEFS[s.itemId];
+      if (s && (!def || !def.infinite)) { removed += Number.isFinite(s.count) ? s.count : 0; this.slots[i] = null; }
+    }
+    this.renderUI();
+    return removed;
+  }
+
+  /** 从局外仓库恢复物资。坏数据、未知物品与不兼容配件均安全忽略。 */
+  importCarry(carry) {
+    const result = { items: 0, attachments: 0, ignored: 0 };
+    if (!carry || typeof carry !== 'object') return result;
+    const itemRows = Array.isArray(carry.items) ? carry.items
+      : Object.entries(carry.items && typeof carry.items === 'object' ? carry.items : {}).map(([itemId, count]) => ({ itemId, count }));
+    for (const row of itemRows) {
+      const def = row && LOOT_DEFS[row.itemId];
+      const count = row && Number.isFinite(row.count) ? Math.max(0, Math.min(999, Math.floor(row.count))) : 0;
+      if (!def || def.infinite || count <= 0) { result.ignored++; continue; }
+      const n = this.add(row.itemId, count); result.items += n;
+      if (n < count) result.ignored += count - n;
+    }
+    const attachmentRows = Array.isArray(carry.attachments) ? carry.attachments : [];
+    if (carry.attachments && typeof carry.attachments === 'object' && !Array.isArray(carry.attachments)) {
+      for (const [weaponId, slots] of Object.entries(carry.attachments)) {
+        if (!slots || typeof slots !== 'object') continue;
+        for (const [slot, itemId] of Object.entries(slots)) attachmentRows.push({ weaponId, slot, itemId });
+      }
+    }
+    for (const row of attachmentRows) {
+      const def = row && LOOT_DEFS[row.itemId];
+      if (!def || !def.equipSlot || def.equipSlot !== row.slot || !this.weapons
+        || typeof this.weapons.installAttachment !== 'function') { result.ignored++; continue; }
+      const r = this.weapons.installAttachment(row.itemId, row.weaponId);
+      if (r.ok) result.attachments++; else result.ignored++;
+    }
+    this.renderUI();
+    return result;
   }
 
   setGameplayContext(ctx = {}) {
@@ -202,12 +331,17 @@ export class InventorySystem {
       x = placement[0]; z = placement[2];
       const roll = rng();
       // 医疗包/电池本身为无限战术补给，不再生成无意义的重复地面掉落。
-      const id = roll > 0.91 ? 'intel_core'
+      // 每张地图保证三把非默认武器各有一件实体掉落，不能依赖低概率随机后
+      // 出现整局都拿不到隐藏枪的情况。
+      const id = i < 3 ? ['weapon_volt', 'weapon_peacekeeper', 'weapon_longbow'][i]
+        : roll > 0.965 ? ['weapon_volt', 'weapon_peacekeeper', 'weapon_longbow'][i % 3]
+        : roll > 0.91 ? 'intel_core'
         : roll > 0.75 ? 'armor_plate'
           : roll > 0.59 ? 'tactical_knife'
             : roll > 0.43 ? 'optic_1x'
-              : roll > 0.27 ? 'sniper_cell'
-                : roll > 0.13 ? 'heavy_mag' : 'light_mag';
+              : roll > 0.27 ? ['sniper_cell_1', 'sniper_cell', 'sniper_cell_3'][i % 3]
+                : roll > 0.13 ? ['heavy_mag_1', 'heavy_mag', 'heavy_mag_3'][i % 3]
+                  : ['light_mag_1', 'light_mag', 'light_mag_3'][i % 3];
       this.spawn(id, 1, [x, placement[1], z], { spawned: 0 });
     }
   }
@@ -229,7 +363,9 @@ export class InventorySystem {
     if (!enemy || !enemy.pos) return null;
     const n = ((enemy.id || this._nextDropId) * 2654435761) >>> 0;
     if ((n % 100) >= 48) return null;
-    const table = ['light_mag', 'heavy_mag', 'sniper_cell', 'optic_1x', 'tactical_knife', 'armor_plate'];
+    const table = ['light_mag_1', 'light_mag', 'light_mag_3', 'heavy_mag_1', 'heavy_mag', 'heavy_mag_3',
+      'sniper_cell_1', 'sniper_cell', 'sniper_cell_3', 'optic_1x', 'tactical_knife', 'armor_plate',
+      'weapon_volt', 'weapon_peacekeeper', 'weapon_longbow'];
     const id = table[n % table.length];
     const y = world && world.groundHeight ? world.groundHeight(enemy.pos[0], enemy.pos[2]) + 0.08 : enemy.pos[1];
     return this.spawn(id, 1, [enemy.pos[0], y, enemy.pos[2]]);
@@ -288,9 +424,10 @@ export class InventorySystem {
   }
 
   /** 双击自动安装，或拖到武器卡片时按 targetWeaponId 精确安装。 */
-  equipSlot(index, targetWeaponId = null) {
+  equipSlot(index, targetWeaponId = null, targetSlot = null) {
     const s = this.slots[index];
     const def = s && LOOT_DEFS[s.itemId];
+    if (s && def && def.weaponId) return this.equipWeaponSlot(index, targetSlot);
     if (!s || !def || !def.equipSlot || !this.weapons || typeof this.weapons.installAttachment !== 'function') {
       Events.emit('ui:message', { title: '不能安装', sub: def ? `${def.name} 不是武器配件` : '该格为空', kind: 'warn' });
       return { ok: false, reason: 'not_attachment' };
@@ -299,7 +436,8 @@ export class InventorySystem {
     if (!result.ok) {
       Events.emit('ui:message', {
         title: result.reason === 'equipped' ? '已经安装' : '无法安装',
-        sub: result.reason === 'equipped' ? def.name : '当前没有兼容武器', kind: 'warn',
+        sub: result.reason === 'equipped' ? def.name
+          : (result.reason === 'lower_rank' ? '已装备同级或更高级配件，请先卸下' : '当前没有兼容武器'), kind: 'warn',
       });
       return result;
     }
@@ -315,11 +453,30 @@ export class InventorySystem {
     return result;
   }
 
+  /** 将地面/背包武器真正装入 1、2、4 号槽，并把被替换武器退回背包。 */
+  equipWeaponSlot(index, targetSlot = null) {
+    const s = this.slots[index];
+    const def = s && LOOT_DEFS[s.itemId];
+    if (!def || !def.weaponId || !this.weapons || typeof this.weapons.installLootWeapon !== 'function') {
+      return { ok: false, reason: 'not_weapon' };
+    }
+    const result = this.weapons.installLootWeapon(def.weaponId, targetSlot);
+    if (!result.ok) return result;
+    s.count--;
+    if (s.count <= 0) this.slots[index] = null;
+    if (result.replaced) this.add(`weapon_${result.replaced}`, 1);
+    this.renderUI();
+    Events.emit('audio:play', { name: 'ui_click', gain: .8, rate: .82 });
+    Events.emit('ui:message', { title: '武器已装备', sub: `${def.name} → ${result.slot + 1} 号槽`, kind: 'good' });
+    return result;
+  }
+
   /** 单击统一入口：配件安装、无限治疗和消耗品都必须产生真实游戏效果。 */
   activateSlot(index) {
     const s = this.slots[index];
     const def = s && LOOT_DEFS[s.itemId];
     if (!s || !def) return { ok: false, reason: 'empty' };
+    if (def.weaponId) return this.equipWeaponSlot(index);
     if (def.equipSlot) return this.equipSlot(index);
     if (Number.isInteger(def.healIndex)) {
       const ok = !!(this.onUseHealing && this.onUseHealing(def.healIndex));
@@ -593,7 +750,7 @@ export class InventorySystem {
           let payload = '';
           try { payload = ev.dataTransfer.getData('text/plain') || ''; } catch (_e) {}
           if (!/^\d+$/.test(payload)) return;
-          const result = this.equipSlot(Number(payload), w.id);
+          const result = this.equipSlot(Number(payload), w.id, i);
           this._dragHandled = !!result.ok;
         });
       }

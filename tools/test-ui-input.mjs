@@ -19,7 +19,8 @@ import { requireChrome, headlessArgs } from './lib/chrome.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const OUT = resolve(ROOT, 'docs/verify/ui');
-const PORT = 8211;
+// 允许并行/残留测试进程通过环境变量换端口，避免 EADDRINUSE 掩盖真实回归。
+const PORT = Number(process.env.IRONFALL_TEST_PORT || 8211);
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.glb': 'model/gltf-binary' };
 const server = createServer(async (req, res) => {
   const rel = normalize(decodeURIComponent((req.url || '/').split('?')[0])).replace(/^([/\\])+/, '');
