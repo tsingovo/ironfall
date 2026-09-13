@@ -70,12 +70,12 @@ mkdirSync(profile, { recursive: true });
  */
 function stopStaleDedicatedBrowser() {
   if (process.platform !== 'win32') return;
-  const escaped = profile.replaceAll("'", "''");
+  const escaped = join(process.env.LOCALAPPDATA || root, 'IRONFALL').replaceAll("'", "''");
   const script = [
-    `$needle = '${escaped}'`,
+    `$needle = '--user-data-dir="?' + [regex]::Escape('${escaped}') + '\\\\app-profile(?:-v[0-9]+)?(?:"|\\s|$)'`,
     "$targets = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {",
     "  ($_.Name -eq 'chrome.exe' -or $_.Name -eq 'msedge.exe') -and",
-    '  $_.CommandLine -and $_.CommandLine.Contains($needle)',
+    '  $_.CommandLine -and $_.CommandLine -match $needle',
     '})',
     'if ($targets.Count -gt 0) {',
     '  $targets | Sort-Object ProcessId -Descending | ForEach-Object {',
@@ -120,11 +120,11 @@ async function probeServer(candidatePort = port) {
   const rootPage = await getText(`${base}/?standalone=1`);
   if (!rootPage.reachable) return { reachable: false, ironfall: false, currentBuild: false };
   const ironfall = rootPage.status === 200 && rootPage.text.includes('<title>IRONFALL');
-  let currentBuild = ironfall && rootPage.text.includes('IRONFALL // BUILD 2.0.6');
+  let currentBuild = ironfall && rootPage.text.includes('IRONFALL // BUILD 2.0.7');
   // 开发目录的 index.html 不内联 HUD，因此再检查源码；发布包的单文件在上一步即可识别。
   if (ironfall && !currentBuild) {
     const hudSource = await getText(`${base}/src/ui/hud.js`);
-    currentBuild = hudSource.status === 200 && hudSource.text.includes('IRONFALL // BUILD 2.0.6');
+    currentBuild = hudSource.status === 200 && hudSource.text.includes('IRONFALL // BUILD 2.0.7');
   }
   return { reachable: true, ironfall, currentBuild };
 }
@@ -148,7 +148,7 @@ async function ensureServer() {
     url = `http://127.0.0.1:${port}/?standalone=1`;
     browserArgs[0] = `--app=${url}`;
     const reason = existing.ironfall ? '检测到旧版 IRONFALL 实例' : '默认端口被其他程序占用';
-    log(`${reason}（端口 ${oldPort}），保留旧进程并改用端口 ${port}。`);
+    log(`${reason}（端口 ${oldPort}），本次从当前目录启动新服务器，端口 ${port}。旧游戏窗口将关闭。`);
     const replacement = await probeServer(port);
     if (replacement.currentBuild) return;
   }

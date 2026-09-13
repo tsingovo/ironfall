@@ -1974,6 +1974,24 @@ const SOUNDS = {
     },
   },
 
+  boss_arrive: {
+    bus: 'ui', gain: 0.85, dur: 2.0, limit: 1, minGap: 3, priority: 5,
+    build(v, t0) {
+      thump(v, t0, { from: 100, to: 32, dur: 1.4, gain: 0.5 });
+      for (let i = 0; i < 3; i++) {
+        tone(v, t0 + i * 0.4, { type: 'sawtooth', freq: 110, to: 82, dur: 0.65, gain: 0.16, filter: 'lowpass', fq: 650, q: 2 });
+      }
+    },
+  },
+  boss_defeat: {
+    bus: 'ui', gain: 0.9, dur: 1.8, limit: 1, minGap: 1, priority: 5,
+    build(v, t0) {
+      thump(v, t0, { from: 150, to: 25, dur: 1.2, gain: 0.55 });
+      [220, 330, 440, 660].forEach((freq, i) => {
+        tone(v, t0 + i * 0.18, { type: 'triangle', freq, dur: 0.7, gain: 0.2 });
+      });
+    },
+  },
   extract_success: {
     bus: 'ui', gain: 0.85, dur: 1.7, limit: 1, minGap: 0.3, priority: 5,
     pitchVar: 0.015, brightVar: 0.05, verb: 0.45,

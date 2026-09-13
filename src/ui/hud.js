@@ -54,7 +54,7 @@ const CREDITS_LINES = [
 // 菜单静态描述：构造时一次性建 DOM，之后只切 class / 文本。
 const MENU_SPEC = {
   main: {
-    tag: 'IRONFALL // BUILD 2.0.6',
+    tag: 'IRONFALL // BUILD 2.0.7',
     title: '钢铁远征',
     sub: 'IRONFALL',
     note: '你是钢铁远征舰队熔炉世界里的拾荒者。搜刮、变强、活着撤离。',
@@ -105,7 +105,7 @@ const MENU_SPEC = {
       { key: '1', label: '继续', sub: 'RESUME', intent: 'resume', primary: true },
       { key: '2', label: '设置', sub: 'SETTINGS', intent: 'open_settings' },
       { key: '3', label: '操作说明', sub: 'CONTROLS', intent: 'open_help' },
-      { key: '4', label: '放弃远征', sub: 'ABANDON RUN', intent: 'quit_to_menu', danger: true },
+      { key: '4', label: '返回主菜单', sub: 'ABANDON RUN', intent: 'quit_to_menu', danger: true },
       { key: '5', label: '退出游戏', sub: 'EXIT TO DESKTOP', intent: 'quit_game', danger: true },
     ],
   },
@@ -137,7 +137,11 @@ const MENU_SPEC = {
     sub: 'SETTINGS',
     note: '↑↓ 选择 · ←→ 调整 · Enter 确认 · Esc 返回',
     settings: true,
-    items: [{ key: '1', label: '返回', sub: 'BACK', intent: 'close_menu', primary: true }],
+    items: [
+      { key: '1', label: '返回游戏', sub: 'RESUME', intent: 'close_menu', primary: true },
+      { key: '2', label: '返回主菜单', sub: '放弃当前远征', intent: 'quit_to_menu', danger: true },
+      { key: '3', label: '退出游戏', sub: 'EXIT TO DESKTOP', intent: 'quit_game', danger: true },
+    ],
   },
   help: {
     tag: 'FIELD MANUAL',

@@ -235,7 +235,8 @@ export class Run {
         }
       }
     }
-    if (remaining === 0 && this.phase === RUN_PHASE.OBJECTIVES) {
+    if (remaining === 0 && !this.bossPending && this.phase === RUN_PHASE.OBJECTIVES) {
+      if (this.tier === 10) { this.end(true); return; }
       this.phase = RUN_PHASE.EXTRACT_READY;
       this._activateExtracts();
       Events.emit('ui:message', {

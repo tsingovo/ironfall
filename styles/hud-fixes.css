@@ -102,6 +102,8 @@ body.menu-open #hud {
  * hud.css 里没有为简报正文定义行高，多行中文会挤在一起重叠。
  * ------------------------------------------------------------------ */
 .menu-briefing-body {
+  max-height: 52vh;
+  overflow-y: auto;
   margin: 14px 0 4px;
   padding: 0 2px;
   text-align: left;

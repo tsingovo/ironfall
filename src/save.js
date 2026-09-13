@@ -342,7 +342,7 @@ export class MetaProgress {
   /** 成功完成一关后的战役推进；第 10 关停留在第 10 关。 */
   advanceCampaign(completedTier = this.unlocked.currentTier) {
     const completed = clampTier(completedTier);
-    const next = Math.min(CAMPAIGN_TIER_COUNT, completed + 1);
+    const next = completed === CAMPAIGN_TIER_COUNT ? 1 : completed + 1;
     this.unlockTier(next);
     this.unlocked.currentTier = next;
     this._dirty = true;

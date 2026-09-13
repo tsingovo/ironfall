@@ -22,6 +22,13 @@
 
 import { emit } from './core/events.js';
 
+// 任务/补给强化不再改变枪械伤害或射速；旧局已持有的同类强化也不生效。
+function boostsGunDamageOrRate(def) {
+  const w = def.apply(1)?.weapon || {};
+  return ['damageMul', 'damageHeadMul', 'rpmMul', 'critDamageMul', 'falloffMinMul']
+    .some((key) => w[key] > 1) || w.critChanceAdd > 0;
+}
+
 export const RARITIES = {
   common: { name: '通用', color: '#9aa7b4', weight: 100, priceMul: 1 },
   rare: { name: '精良', color: '#4aa3ff', weight: 45, priceMul: 1.9 },
@@ -1018,6 +1025,7 @@ export class UpgradeSystem {
     const pool = [];
     for (const id of Object.keys(UPGRADES)) {
       const def = UPGRADES[id];
+      if (boostsGunDamageOrRate(def)) continue;
       const stacks = this._owned.get(id) || 0;
       if (stacks >= def.maxStacks) continue;
       pool.push(def);
@@ -1152,7 +1160,7 @@ export class UpgradeSystem {
 
     for (const [id, stacks] of this._owned) {
       const def = UPGRADES[id];
-      if (!def || stacks <= 0) continue;
+      if (!def || stacks <= 0 || boostsGunDamageOrRate(def)) continue;
       const patch = def.apply(stacks);
       if (!patch) continue;
       for (const group of GROUP_ORDER) {

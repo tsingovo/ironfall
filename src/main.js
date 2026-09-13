@@ -588,9 +588,8 @@ class Game {
       world: (biome && biome.desc)
         ? `${biome.name}：${biome.desc}\n钢铁远征舰队把整支锻造舰队开进星系边缘，用星港把行星直接熔成战舰。你是被留在封锁区里的拾荒者，穿着拼装的外骨骼，靠拆解远征军的设备换一条命。`
         : undefined,
-      mission: m
-        ? `第 ${m.tier} 层 · ${m.title}\n${m.brief}`
-        : undefined,
+      mission: MISSIONS.map((mission) => `第 ${mission.tier} 层 · ${mission.title}\n${mission.brief}`)
+        .join('\n\n') + '\n\n第 3、6、10 层有守关首领，击败后才能完成本层。第十层全部目标完成后自动结算，返回主菜单开始下一轮。',
       tier: this.tier,
       biomeName: biome ? biome.name : '',
       mapName: this.mapName || '',
@@ -737,7 +736,8 @@ class Game {
   _onIntent(name, payload) {
     switch (name) {
       case 'start_run':
-        this.startRun();
+        if (this._nextTier) this.retryRun();
+        else this.startRun();
         break;
       case 'restart':
       case 'retry':
@@ -924,6 +924,15 @@ class Game {
       else this.hud.toast('外骨骼失效', '信号中断……', 'warn');
     }
     Audio.play(p.extracted ? 'extract_success' : 'player_die');
+    if (p.extracted && this.tier === 10) {
+      this.menuKind = 'main';
+      this.hud.showMenu('main');
+      this.hud.setVisible(false);
+      this.hud.el['menu-main-note'].textContent =
+        `战役结算：击杀 ${st.kills || 0} · 获得 ${earned} 远征点数，战利品已入库。` +
+        '熔炉核心熄灭，封锁航道终于打开。你带着幸存者离开废墟，却收到另一座锻造星港的求救信号。' +
+        '远征尚未结束——下一轮从第一层开始，保留局外成长与仓库。';
+    }
     // 阵亡时也起自动重生倒计时，避免卡在结算界面
     if (!p.extracted) this._respawnTimer = 12;
   }

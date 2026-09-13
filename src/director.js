@@ -72,6 +72,10 @@ export class Director {
     this.spawnCooldown = 2.0;
     this._time = 0;
     this._openingSpawned = false;
+    this._boss = null;
+    this._bossId = null;
+    this._bossPulse = 0;
+    this.run.bossPending = [3, 6, 10].includes(this.tier);
     this._dpsWindow.length = 0;
     this._spawnHistory.length = 0;
     this._applyTier();
@@ -86,7 +90,7 @@ export class Director {
     const weights = ids.map((k) => table[k]);
     let made = 0;
     let skipped = 0;
-    const want = 3;
+    const want = 3 + Math.floor(this.tier / 2);
     for (let i = 0; i < want; i++) {
       const id = M.weightedPick(ids, weights, this.rng);
       const out = this._findSpawnPoint(id, true);
@@ -114,7 +118,7 @@ export class Director {
     // 敌人仍少于最早版本，但不再机械砍半：远距离增援会占用较长的赶路时间，
     // 若并发只有 5 个就会产生大段空场。约 70% 的旧上限配合安全刷新距离，
     // 能让玩家持续遇敌而不会回到贴脸围攻。
-    this.concurrencyLimit = Math.min(18, 6 + Math.round(t * 1.15));
+    this.concurrencyLimit = Math.min(32, 6 + t * 2);
     this.budgetRate = 0.65 + t * 0.40;
     this.enemies.setDifficulty(0.85 + (t - 1) * 0.28);
   }
@@ -130,6 +134,29 @@ export class Director {
     if (!this.active || !this.enabled) return;
     this._time += dt;
     this.phaseTime += dt;
+    if (this.run.bossPending) {
+      if (!this._boss) {
+        const pos = this._findSpawnPoint('heavy', true);
+        if (pos) {
+          this._boss = this.enemies.spawn('heavy', pos, { elite: true, scale: 1.6 });
+          this._bossId = this._boss.id;
+          this._boss.hp = this._boss.maxHp *= 5 + this.tier;
+          this._boss.shield = this._boss.maxShield *= 3;
+          Events.emit('audio:play', { name: 'boss_arrive' });
+          Events.emit('ui:message', { title: '守关首领：熔炉执政官', sub: '击败首领才能完成本层目标', kind: 'warn' });
+        }
+      } else if (!this._boss.alive || this._boss.id !== this._bossId) {
+        this.run.bossPending = false;
+        Events.emit('audio:play', { name: 'boss_defeat' });
+        Events.emit('ui:message', { title: '首领已击败', sub: '完成剩余目标，结束本层远征', kind: 'good' });
+      } else {
+        this._bossPulse -= dt;
+        if (this._bossPulse <= 0) {
+          this._bossPulse = 8;
+          Events.emit('audio:play', { name: 'boss_arrive' });
+        }
+      }
+    }
 
     // 统计玩家表现
     this._updatePlayerMetrics(dt);
