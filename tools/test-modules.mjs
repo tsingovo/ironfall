@@ -363,6 +363,18 @@ if (wp) {
   const expectedAim = mods['src/core/math.js'].dirFromAngles(0.22, 0.06, new Float32Array(3));
   check('连续射击弹道与屏幕相机后坐方向完全一致',
     actualAim.every((v, i) => Math.abs(v - expectedAim[i]) < 1e-6));
+  check('开枪镜头俯仰/横摆与屏幕抖动默认完全关闭',
+    mods['src/core/config.js'].CFG.fx.fireCameraRecoil === false
+      && mods['src/core/config.js'].CFG.fx.fireScreenShake === false);
+  probe.mods = { weapon: { recoilMul: 1 } };
+  probe.rng = () => 0.5;
+  probe.recoil.patternIndex = 0;
+  const noShakeState = { adsT: 0, spreadExtra: 0 };
+  probe._applyRecoil(wp.WEAPONS.r99, noShakeState);
+  check('实际开火后四个相机/瞄准后坐偏移保持为零且枪械散布仍累积',
+    probe.recoil.aimPitch === 0 && probe.recoil.aimYaw === 0
+      && probe.recoil.visPitch === 0 && probe.recoil.visYaw === 0
+      && noShakeState.spreadExtra > 0);
 
   // 音频名必须存在
   const audio = mods['src/audio/audio.js'];

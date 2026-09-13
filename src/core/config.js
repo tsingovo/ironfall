@@ -189,6 +189,8 @@ const DEFAULTS = {
      * 设为 true 即可恢复。
      */
     fireScreenShake: false,
+    // 完全取消开枪引起的镜头俯仰/横摆；枪体 kick 与弹着散布仍保留。
+    fireCameraRecoil: false,
     hitStopScale: 1.0,
     maxParticles: 4096,
     maxDecals: 320,

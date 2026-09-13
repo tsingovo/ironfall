@@ -1674,10 +1674,17 @@ export class WeaponSystem {
     const aimMul = def.recoilAimMul;
     const visMul = def.recoilVisualMul;
 
-    this.recoil.aimPitch += (patPitch + rndPitch) * aimMul * (1 - st.adsT * 0.22);
-    this.recoil.aimYaw += (patYaw + rndYaw) * aimMul;
-    this.recoil.visPitch += (patPitch + rndPitch) * visMul;
-    this.recoil.visYaw += (patYaw + rndYaw) * visMul;
+    if (CFG.fx.fireCameraRecoil !== false) {
+      this.recoil.aimPitch += (patPitch + rndPitch) * aimMul * (1 - st.adsT * 0.22);
+      this.recoil.aimYaw += (patYaw + rndYaw) * aimMul;
+      this.recoil.visPitch += (patPitch + rndPitch) * visMul;
+      this.recoil.visYaw += (patYaw + rndYaw) * visMul;
+    } else {
+      // 用户要求开火时镜头完全稳定。这里同时清掉影响真实射线的 aim 通道，
+      // 避免画面不动但子弹偷偷偏离准心；枪体 kick 和 spreadExtra 仍提供反馈。
+      this.recoil.aimPitch = 0; this.recoil.aimYaw = 0;
+      this.recoil.visPitch = 0; this.recoil.visYaw = 0;
+    }
     this.recoil.recoveryDelay = 0.055;
 
     // 扩散累积

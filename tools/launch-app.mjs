@@ -9,8 +9,10 @@ import http from 'node:http';
 const here = dirname(fileURLToPath(import.meta.url));
 const root = dirname(here);
 const logFile = join(root, 'launch.log');
-const port = Number(process.env.IRONFALL_PORT || 18080);
-const url = `http://127.0.0.1:${port}/?standalone=1`;
+// 2.0 使用独立端口，绝不能复用 1.x 在 18080 上残留的单文件服务器。
+// 旧服务器返回同样的 <title>，此前仅按标题探测会让新版启动器打开旧游戏。
+let port = Number(process.env.IRONFALL_PORT || 18200);
+let url = `http://127.0.0.1:${port}/?standalone=1`;
 
 function log(message) {
   const line = `[${new Date().toLocaleString('zh-CN', { hour12: false })}] ${message}`;
@@ -31,7 +33,9 @@ if (!browser) {
   process.exit(2);
 }
 
-const profile = join(process.env.LOCALAPPDATA || root, 'IRONFALL', 'app-profile');
+// 隔离 1.x 的 Service Worker / local cache / 残留 Chromium 进程；meta 存档仍在
+// 2.0 专属配置内持续保存，后续 2.x 热修不会再更换此目录。
+const profile = join(process.env.LOCALAPPDATA || root, 'IRONFALL', 'app-profile-v2');
 const browserArgs = [
   `--app=${url}`,
   `--user-data-dir=${profile}`,
@@ -97,30 +101,57 @@ function stopStaleDedicatedBrowser() {
  * 随即杀掉静态服务器，于是用户双击后只得到空白/没有窗口。
  *
  * 现在服务器独立常驻并可被后续双击复用；它按请求实时读取文件且禁用缓存，代码
- * 更新无需重启服务器。进程很轻量，只监听 127.0.0.1:18080。
+ * 更新无需重启服务器。若内容版本不匹配，启动器会保留旧进程并自动换空闲端口。
  */
-function probeServer() {
+function getText(target) {
   return new Promise((resolve) => {
-    const req = http.get(url, (res) => {
+    const req = http.get(target, (res) => {
       const chunks = [];
       res.on('data', (d) => chunks.push(d));
-      res.on('end', () => resolve({
-        reachable: true,
-        ironfall: res.statusCode === 200 && Buffer.concat(chunks).toString('utf8').includes('<title>IRONFALL'),
-      }));
+      res.on('end', () => resolve({ reachable: true, status: res.statusCode, text: Buffer.concat(chunks).toString('utf8') }));
     });
-    req.on('error', () => resolve({ reachable: false, ironfall: false }));
-    req.setTimeout(700, () => { req.destroy(); resolve({ reachable: false, ironfall: false }); });
+    req.on('error', () => resolve({ reachable: false, status: 0, text: '' }));
+    req.setTimeout(700, () => { req.destroy(); resolve({ reachable: false, status: 0, text: '' }); });
   });
+}
+
+async function probeServer(candidatePort = port) {
+  const base = `http://127.0.0.1:${candidatePort}`;
+  const rootPage = await getText(`${base}/?standalone=1`);
+  if (!rootPage.reachable) return { reachable: false, ironfall: false, currentBuild: false };
+  const ironfall = rootPage.status === 200 && rootPage.text.includes('<title>IRONFALL');
+  let currentBuild = ironfall && rootPage.text.includes('IRONFALL // BUILD 2.0.1');
+  // 开发目录的 index.html 不内联 HUD，因此再检查源码；发布包的单文件在上一步即可识别。
+  if (ironfall && !currentBuild) {
+    const hudSource = await getText(`${base}/src/ui/hud.js`);
+    currentBuild = hudSource.status === 200 && hudSource.text.includes('IRONFALL // BUILD 2.0.1');
+  }
+  return { reachable: true, ironfall, currentBuild };
 }
 
 async function ensureServer() {
   const existing = await probeServer();
-  if (existing.ironfall) {
-    log('正在复用 IRONFALL 本地服务器…');
+  if (existing.currentBuild) {
+    log(`正在复用 IRONFALL 2.x 本地服务器（端口 ${port}）…`);
     return;
   }
-  if (existing.reachable) throw new Error(`端口 ${port} 已被其他程序占用`);
+  if (existing.reachable) {
+    const oldPort = port;
+    let found = 0;
+    for (let candidate = oldPort + 1; candidate <= oldPort + 30; candidate++) {
+      const state = await probeServer(candidate);
+      if (!state.reachable) { found = candidate; break; }
+      if (state.currentBuild) { found = candidate; break; }
+    }
+    if (!found) throw new Error(`端口 ${oldPort}—${oldPort + 30} 均被占用`);
+    port = found;
+    url = `http://127.0.0.1:${port}/?standalone=1`;
+    browserArgs[0] = `--app=${url}`;
+    const reason = existing.ironfall ? '检测到旧版 IRONFALL 实例' : '默认端口被其他程序占用';
+    log(`${reason}（端口 ${oldPort}），保留旧进程并改用端口 ${port}。`);
+    const replacement = await probeServer(port);
+    if (replacement.currentBuild) return;
+  }
 
   // --single <html>：发布包模式。游戏是单个 HTML，用极简服务器直接吐它。
   // 仍然走 HTTP 的原因：ES Modules 在 file:// 下会被 CORS 拦，
@@ -140,7 +171,7 @@ async function ensureServer() {
     for (let i = 0; i < 80; i++) {
       await new Promise((resolve) => setTimeout(resolve, 100));
       const state = await probeServer();
-      if (state.ironfall) return;
+      if (state.currentBuild) return;
       if (state.reachable) throw new Error(`端口 ${port} 被其他程序占用`);
     }
     throw new Error('本地游戏服务器启动超时');
@@ -157,7 +188,7 @@ async function ensureServer() {
   for (let i = 0; i < 80; i++) {
     await new Promise((resolve) => setTimeout(resolve, 100));
     const state = await probeServer();
-    if (state.ironfall) return;
+    if (state.currentBuild) return;
     if (state.reachable) throw new Error(`端口 ${port} 被其他程序占用`);
   }
   throw new Error('本地游戏服务器启动超时');
@@ -165,6 +196,12 @@ async function ensureServer() {
 
 try {
   await ensureServer();
+  // 专项回归测试/运维探测：完成版本握手与端口选择后退出，不打开 GUI。
+  // 正常双击启动路径不带此参数，行为不受影响。
+  if (process.argv.includes('--ensure-only')) {
+    log(`版本握手完成：${url}`);
+    process.exit(0);
+  }
   stopStaleDedicatedBrowser();
   log(`正在打开无边框独立游戏窗口：${browser}`);
   const app = spawn(browser, browserArgs, {
