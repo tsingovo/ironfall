@@ -1577,9 +1577,12 @@ export class WeaponSystem {
     } else if (worldHit.hit) {
       res.endPoint = worldHit.point;
       res.dist = worldHit.t;
+      // 世界命中没有敌人的部位伤害变量；必须独立计算，不能引用上方块内 dmg。
+      const worldDamage = (charged && def.damageCharged != null ? def.damageCharged : def.damage)
+        * this._falloff(def, worldHit.t) * (W.damageMul || 1);
       Events.emit('hit:world', {
         point: worldHit.point, normal: worldHit.normal, kind: worldHit.kind,
-        flags: worldHit.flags, damage: dmg,
+        flags: worldHit.flags, damage: worldDamage,
       });
       // 穿透：命中世界后按剩余穿透数继续（简化：只在敌人穿透时生效）
     } else {

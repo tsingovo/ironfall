@@ -331,7 +331,7 @@ class Game {
       if (p.pos) Audio.playAt(p.name, p.pos, this.player.eyePos, { gain: p.gain });
       else Audio.play(p.name, { gain: p.gain, rate: p.rate });
     });
-    on('fx:shake', (p) => this.shake.add(p.amount, p.time));
+    // 禁用额外屏幕震动；武器 recoil 独立保留。
     on('fx:hitmarker', (p) => {
       if (this.hud) this.hud.flashHitmarker(p.kill ? 'kill' : 'normal');
     });
@@ -386,7 +386,7 @@ class Game {
       if (p.start) Audio.play('grapple_loop', { loop: true, gain: 0.44 });
       else Audio.stopLoop('grapple_loop');
     });
-    on('player:hurt', (p) => this.shake.add(0.25 + Math.min(0.5, p.amount / 60), 0.24));
+    // 受伤仍有音效与 HUD 反馈，不再摇晃屏幕。
     on('player:die', () => this._handleDeath());
     // 敌人死亡不生成烟雾爆发，避免遮挡正在交火的后方目标。
     on('objective:progress', (p) => {

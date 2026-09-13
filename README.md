@@ -1,4 +1,4 @@
-# IRONFALL 2.0.5 · 钢铁远征
+# IRONFALL 2.0.6 · 钢铁远征
 
 IRONFALL 是一个原生 WebGL2 第一人称搜打撤 / Roguelike 游戏。2.0 版使用独立无边框 Chromium 游戏窗口，玩法重心为 Apex 风格枪战与机动、十关战役、地图搜刮、撤离带出和局外成长。
 
