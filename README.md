@@ -29,6 +29,17 @@ set IRONFALL_PORT=19080
 
 ## 2.0 已实现内容
 
+### 局域网联机（合作，最多 4 人）
+
+- 双击 `开始联机.cmd` 即可成为房主：启动零依赖局域网服务器并打印局域网地址。
+- 朋友用 Chrome/Edge 打开那个地址，**主菜单 → 8 局域网联机 → 2 加入房间**即可，无需输入 IP。
+- 房主点“开始远征”，房客自动加载**完全相同的任务与地图**（种子由房主下发）。
+- 每个客户端权威模拟自己的玩家，因此移动手感与单机逐帧一致，没有橡皮筋与预测误差；
+  敌人与刷怪导演由房主权威模拟，房客按快照插值显示。
+- 敌人会就近选择队友作为目标；伤害由房主判定后转发给本人结算，不会误记到别人身上。
+- 队友以第三人称模型显示（21 部件整身人形），大厅提供队友血量/延迟列表与队伍聊天。
+- 详细设计与已知边界见 [`docs/LAN.md`](docs/LAN.md)。
+
 ### 战役与搜打撤
 
 - 10 个真实可进入的战役关卡，覆盖 5 种生物群系与 6 种地图原型。
@@ -183,6 +194,14 @@ node tools/test-slide-slope.mjs
 node tools/launch-app.mjs --dry-run
 ```
 
+联机相关（需要 Chrome/Edge）：
+
+```powershell
+node tools/test-lan-server.mjs   # 服务器：帧编解码 / 房间 / 房主转移 / 中继
+node tools/test-lan-map.mjs      # 同图：地图生成确定性 / JSON 往返 / 十关可复现
+node tools/test-lan.mjs          # 端到端：两个真实浏览器客户端走完整联机链路
+```
+
 构建 2.0 发布包：
 
 ```powershell
@@ -202,6 +221,8 @@ node tools/build-release.mjs 2.0.0
 - `src/maps/builtin-maps.js` / `src/world.js`：地图、地形、岩浆、目标与碰撞
 - `src/audio/audio.js`：程序化 WebAudio 音效
 - `src/ui/hud.js`：HUD、设置、战役选择和局外军械库
+- `src/net/`：局域网联机（传输、协议、会话、队友模型），只依赖 `core/*`
+- `tools/lan-server.mjs`：零依赖局域网服务器（静态站点 + WebSocket 房间中继）
 
 许可：[MIT](LICENSE)
 

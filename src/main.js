@@ -13,7 +13,7 @@ import { createSharedMeshes } from './engine/fx-meshes.js';
 import { World } from './world.js';
 import { Player } from './player.js';
 import { WeaponSystem, WEAPONS } from './weapons.js';
-import { EnemySystem, ENEMY_TYPES } from './enemies.js';
+import { EnemySystem, ENEMY_TYPES, ENEMY_IDS } from './enemies.js';
 import { Director } from './director.js';
 import { Run, RUN_PHASE } from './run.js';
 import { UpgradeSystem, RARITIES } from './upgrades.js';
@@ -28,6 +28,7 @@ import { HUD } from './ui/hud.js';
 import { Save, MetaProgress, PERKS } from './save.js';
 import { InventorySystem, LOOT_DEFS } from './inventory.js';
 import { PlayerModelRenderer } from './player-model.js';
+import { LanSession, LAN_PHASE } from './net/session.js';
 
 const PHYS_DT = 1 / 128;
 const MAX_STEPS_PER_FRAME = 6;
@@ -115,6 +116,13 @@ class Game {
     this.meta = new MetaProgress();
     this.settings = this._loadSettings();
 
+    // 局域网联机：会话对象在所有子系统建好之后才创建（init 里），这里只占位。
+    // enemyTypeIds 是兵种槽表的唯一事实来源，必须两端顺序一致，因此用固定导出
+    // 而不是运行时刷怪顺序。
+    this.lan = null;
+    this.enemyTypeIds = ENEMY_IDS;
+    this._lanHudAcc = 0;
+
     this.tier = typeof this.meta.currentTier === 'function' ? this.meta.currentTier() : 1;
     this.mapIndex = this.tier - 1;
     this._ready = false;
@@ -157,7 +165,7 @@ class Game {
 
     // 敌人
     this.enemies = new EnemySystem(world, player, engine, {
-      onKill: (enemy, headshot) => this._onEnemyKill(enemy, headshot),
+      onKill: (enemy, headshot, opts) => this._onEnemyKill(enemy, headshot, opts),
     });
 
     // 特效
@@ -206,6 +214,12 @@ class Game {
       inventory: this.inventory, meta: this.meta, perks: PERKS, missions: MISSIONS,
     });
     this.hud.onIntent = (name, payload) => this._onIntent(name, payload);
+
+    // 局域网联机会话：HUD 建立之后再创建，便于把提示/聊天直接送进 HUD。
+    this.lan = new LanSession(this);
+    this.lan.onNotice = (title, sub, kind) => { if (this.hud) this.hud.toast(title, sub, kind); };
+    this.lan.onSessionStart = (info) => this._onLanSessionStart(info);
+    this.lan.onChat = () => { this._pushLanHudState(); };
 
     // 点击画布 = 请求指针锁定 + 拉起音频。
     // 这是"鼠标不跟随"的兜底：菜单按钮点击时的手势可能不被浏览器认作画布手势，
@@ -271,8 +285,11 @@ class Game {
       fpsCap: 0,
       quality: 'high',
       autoFullscreen: true,   // 开始远征时自动全屏，规避 Ctrl+W 等浏览器保留快捷键
+      playerName: '',         // 局域网联机昵称；留空时按房主/玩家自动取名
       ...(saved || {}),
     };
+    if (typeof settings.playerName !== 'string') settings.playerName = '';
+    settings.playerName = settings.playerName.replace(/[\u0000-\u001f\u007f<>]/g, '').slice(0, 12);
     // 旧版 UI 把 0.2~10 直接当弧度/像素保存，导致最低档也快得不可用。
     if (!Number.isFinite(settings.sensitivity) || settings.sensitivity > 0.02) {
       settings.sensitivity = 0.0012;
@@ -405,6 +422,13 @@ class Game {
       if (this.hud && this._upgradeOpen) this.hud.showUpgradePanel(p.offers, this.upgrades.alloy);
     });
     on('run:end', (p) => this._onRunEnd(p));
+    // 联机：房主把击杀（含击杀者）广播出去，供各端补击杀播报与本人掉落。
+    on('enemy:die', (p) => {
+      if (!this.lan || !this.lan.isHost || !this.lan.active || !p || !p.enemy) return;
+      const src = p.source;
+      const by = typeof src === 'string' ? src : this.lan.selfId;
+      this.lan.broadcastEnemyDeath(p.enemy, by, p.headshot);
+    });
   }
 
   _killFeedText(enemy, headshot) {
@@ -413,15 +437,27 @@ class Game {
     return headshot ? `爆头击毁 ${name}` : `击毁 ${name}`;
   }
 
-  _onEnemyKill(enemy, headshot) {
+  /**
+   * 击杀结算。opts.source 是联机时的击杀者标识：字符串 = 某位房客的 peer id，
+   * 因此奖励与掉落必须留给那位房客本机结算，房主不能替他吃掉。
+   */
+  _onEnemyKill(enemy, headshot, opts) {
+    const source = opts && opts.source;
+    if (typeof source === 'string') return;
+    this.applyKillRewards(headshot);
+    if (this.inventory) this.inventory.spawnEnemyDrop(enemy, this.world);
+    Audio.play('kill_confirm', { gain: 0.95 });
+  }
+
+  /** 击杀奖励（吸血、冲刺重置等）。房客在自己机器上调用同一套逻辑。 */
+  applyKillRewards(headshot) {
+    if (!this.player) return;
     const mods = this.player.mods.move;
     // 击杀类改件效果
     if (mods.dashResetOnKillAdd) this.player.refreshAirAbilities();
     if (mods.lifestealOnKillAdd) this.player.heal(mods.lifestealOnKillAdd);
     if (headshot && mods.healOnHeadshotKillAdd) this.player.heal(mods.healOnHeadshotKillAdd);
     if (this._sliding && mods.healthOnSlideKillAdd) this.player.heal(mods.healthOnSlideKillAdd);
-    if (this.inventory) this.inventory.spawnEnemyDrop(enemy, this.world);
-    Audio.play('kill_confirm', { gain: 0.95 });
   }
 
   /** 载入任务（地图 + 难度层） */
@@ -430,7 +466,11 @@ class Game {
     this.mapIndex = Math.max(0, index | 0);
     const mission = getMission(this.mapIndex) || MISSIONS[0];
     this.tier = mission.tier || 1;
-    const seed = (mission.seedBase || 1000) + (this.meta.stats.runs * 7919);
+    // 联机时地图种子必须来自房主：单机种子掺了本机存档进度（meta.stats.runs），
+    // 两台机器各算各的就会生成不同的地图。
+    const seed = Number.isFinite(o.seed)
+      ? (o.seed | 0)
+      : ((mission.seedBase || 1000) + (this.meta.stats.runs * 7919));
     this.mapSeed = seed;
     const mapData = generateMap({
       seed,
@@ -468,8 +508,8 @@ class Game {
       this.player.respawn(this.findSpawn());
       this.enemies.clear();
     } else if (this.player) {
-      // 首次载入也要备好出生点缓存
-      this._spawnCache = this.findSpawn();
+      // 首次载入也要备好出生点缓存（按索引缓存，见 findSpawn）
+      this.findSpawn(0);
     }
     return mapData;
   }
@@ -482,8 +522,26 @@ class Game {
    * 会明显拖慢帧率。现在每张地图只算一次。
    */
   findSpawn(index = 0) {
-    if (!this._spawnCache) this._spawnCache = this.world.findPlayerSpawn(index);
-    return this._spawnCache;
+    // 联机时每位玩家要用不同的出生点，因此缓存必须按索引分开；
+    // 只用单一缓存会让后加入的人被丢回 0 号点，与队友叠在一起。
+    const i = Math.max(0, index | 0);
+    if (!this._spawnCache) this._spawnCache = [];
+    if (!this._spawnCache[i]) this._spawnCache[i] = this.world.findPlayerSpawn(i);
+    return this._spawnCache[i];
+  }
+
+  /**
+   * 本机玩家在队伍里的序号，用于分配互不重叠的出生点。
+   * 单人/离线时恒为 0，与改造前的行为完全一致。
+   */
+  localSpawnIndex() {
+    if (!this.lan || !this.lan.inSession) return 0;
+    return Math.max(0, this.lan.squadList().findIndex((p) => p.self));
+  }
+
+  /** 本机是否为“房客”（联机局内、非房主）。非联机时恒为 false。 */
+  _lanGuest() {
+    return !!(this.lan && this.lan.active && !this.lan.isHost);
   }
 
   // ================================================================ 开局/重开
@@ -540,11 +598,21 @@ class Game {
     if (this.hud) { this.hud.hideMenu(); this.hud.setVisible(true); }
 
     if (this.weapons && typeof this.weapons.resetLoadout === 'function') this.weapons.resetLoadout();
-    this.loadMission(this.tier - 1, {});
+    // 联机时房主把本局种子随 SESSION 广播，双方必须用同一颗种子和同一张任务图；
+    // _pendingLanStart 由 _onLanSessionStart 在房客侧填好。
+    const lanStart = this._pendingLanStart;
+    this._pendingLanStart = null;
+    if (lanStart) {
+      this.tier = Math.max(1, Math.min(10, lanStart.tier || 1));
+      this.mapIndex = Math.max(0, lanStart.mapIndex | 0);
+      this.loadMission(this.mapIndex, { seed: lanStart.seed });
+    } else {
+      this.loadMission(this.tier - 1, {});
+    }
     const deploymentCarry = this._consumeDeploymentCarry();
     if (deploymentCarry && this.inventory) this.inventory.importCarry(deploymentCarry);
     this.player.resetArmorShieldBonus();
-    this.player.respawn(this.findSpawn());
+    this.player.respawn(this.findSpawn(this.localSpawnIndex()));
     this.enemies.clear();
     this.weapons.resetAmmo();
     this.weapons.stats.shotsFired = 0;
@@ -571,7 +639,57 @@ class Game {
       this.hud.toast(`第 ${this.tier} 层 · ${this.mapName}`, this.missionBrief(), 'info');
     }
     this._requestPointerLockWithRetry();
+    this._afterLanRunStart();
     return true;
+  }
+
+  /**
+   * 联机开局后的收尾：
+   *  · 房主：把权威模式装回敌人系统，并向全体广播本局配置（地图/种子）。
+   *  · 房客：切到复制模式（敌人不跑 AI），等待房主的敌人快照。
+   * 非联机时整段是空操作。
+   */
+  _afterLanRunStart() {
+    const lan = this.lan;
+    if (!lan || !lan.inSession || !lan.online) {
+      if (lan) lan.applyRoleToWorld();
+      return;
+    }
+    lan.applyRoleToWorld();
+    if (lan.isHost) {
+      lan.announceSession({
+        mapIndex: this.mapIndex,
+        seed: this.mapSeed,
+        tier: this.tier,
+        mapName: this.mapName,
+      });
+      this.director.start(this.run);
+    } else {
+      // 房客不跑刷怪导演；敌人完全来自房主快照。
+      this.director.stop();
+      this.director.enabled = false;
+    }
+    if (this.hud) {
+      this.hud.toast(
+        lan.isHost ? '局域网房间已开局' : '已加入房主的远征',
+        `${lan.peerCount} 人在线 · 延迟 ${lan.latency} ms`,
+        'good',
+      );
+    }
+  }
+
+  /** 房客收到房主的 SESSION：用同一张图、同一颗种子开始本局 */
+  _onLanSessionStart(info) {
+    if (!this.lan) return;
+    this._pendingLanStart = info;
+    if (this.hud) this.hud.hideMenu();
+    this.startRun();
+  }
+
+  /** 把联机状态推给 HUD（限频，避免每帧构造对象） */
+  _pushLanHudState() {
+    if (!this.hud || typeof this.hud.setLanState !== 'function' || !this.lan) return;
+    this.hud.setLanState(this.lan.lobbyState());
   }
 
   missionBrief() {
@@ -881,9 +999,70 @@ class Game {
       case 'open_main':
         if (this.hud) this.hud.showMenu('main');
         break;
+      // ------------------------------------------------------------ 局域网联机
+      case 'open_lan':
+        if (this.hud) {
+          this._pushLanHudState();
+          if (this._playing) this.openMenuPanel('lan', { freeze: true });
+          else this.hud.showMenu('lan');
+        }
+        break;
+      case 'lan_set_name': {
+        const name = String((payload && payload.value) || '').slice(0, 12);
+        this.settings.playerName = name;
+        this.applySettings();
+        if (this.lan) this.lan.selfName = name || this.lan.selfName;
+        this._pushLanHudState();
+        break;
+      }
+      case 'lan_host':
+        this._lanConnect(true);
+        break;
+      case 'lan_join':
+        this._lanConnect(false);
+        break;
+      case 'lan_leave':
+        if (this.lan) {
+          this.lan.leave();
+          if (this.hud) this.hud.toast('已退出局域网', '', 'info');
+          this._pushLanHudState();
+        }
+        break;
+      case 'lan_start':
+        // 房主在房间里点“开始远征”：走与单机完全相同的入口，开局后再广播配置。
+        if (this.lan && this.lan.isHost && this.lan.online) this.startRun();
+        else if (this.hud) this.hud.toast('只有房主可以开局', '请等待房主开始远征', 'warn');
+        break;
+      case 'lan_chat':
+        if (this.lan && this.lan.online) this.lan.sendChat((payload && payload.value) || '');
+        this._pushLanHudState();
+        break;
       default:
         break;
     }
+  }
+
+  /** 房主创建房间 / 房客加入房间的统一入口 */
+  async _lanConnect(asHost) {
+    if (!this.lan) return false;
+    if (this.lan.inSession || this.lan.phase === LAN_PHASE.CONNECTING) {
+      if (this.hud) this.hud.toast('已经在房间里', '', 'info');
+      return false;
+    }
+    this._pushLanHudState();
+    if (this.hud) this.hud.toast('正在连接局域网服务器…', this.lan._t.url, 'info');
+    const name = this.settings.playerName || (asHost ? '房主' : '玩家');
+    const ok = asHost ? await this.lan.host(name) : await this.lan.join(name);
+    if (this.hud) {
+      this.hud.toast(
+        ok ? (this.lan.isHost ? '房间已创建' : '已加入房间') : '联机失败',
+        ok ? `把地址发给同网段的朋友：${location.origin}/` : this.lan.joinError,
+        ok ? 'good' : 'warn',
+      );
+    }
+    this.lan.applyRoleToWorld();
+    this._pushLanHudState();
+    return ok;
   }
 
   _onRunEnd(p) {
@@ -1404,6 +1583,10 @@ class Game {
 
     const scaledDt = dt * this.timeScale;
 
+    // 联机会话每帧推进：发送自身状态、房主广播敌人快照、房客插值远程敌人。
+    // 必须在物理步之前调用，让本帧的 enemies.update 用上最新的插值目标。
+    if (this.lan) this.lan.update(dt);
+
     // ---- 固定步物理
     // 视角增量按"本帧实际执行的物理步数"均摊，保证不同帧率下转头速度一致。
     this.accumulator += scaledDt;
@@ -1551,7 +1734,8 @@ class Game {
 
     // 敌人与导演
     this.enemies.update(dt, p);
-    this.director.update(dt);
+    // 房客不跑刷怪导演：刷怪是房主的权威行为，房客只接收敌人快照。
+    if (!this._lanGuest()) this.director.update(dt);
     this.run.objectiveInteractDown = !!input.interactDown;
     this.run.update(dt, p);
 
@@ -1717,6 +1901,8 @@ class Game {
     this.world.render(e);
     if (this.inventory) this.inventory.render(e);
     if (this.playerModel) this.playerModel.render(e, dt);
+    // 联机队友的第三人称模型：世界 pass 内提交，与敌人共用同一套实例批次约束。
+    if (this.lan) this.lan.renderAvatars(e, dt);
     this.enemies.render(e);
     // 敌人标记已默认开启；高亮仍参与深度测试，不能透过地板或墙体。
     if (this.enemyMarkers.enabled) {
@@ -1747,6 +1933,14 @@ class Game {
       const hpbs = this.enemies.getHealthBars();
       this.hud.update(dt);
       this.hud.setAlloy(this.upgrades ? this.upgrades.alloy : 0);
+      // 联机状态限频推送（8 Hz）：每帧构造状态对象会白白产生垃圾。
+      if (this.lan && this.lan.phase !== 'off') {
+        this._lanHudAcc += dt;
+        if (this._lanHudAcc >= 0.125) {
+          this._lanHudAcc = 0;
+          this._pushLanHudState();
+        }
+      }
       this.hud.render();
       void hpbs;
     }
@@ -2035,6 +2229,7 @@ class Game {
         selection: this.healing.selection,
       } : null,
       runPhase: this.run ? this.run.phase : 'none',
+      lan: this.lan ? this.lan.debugState() : null,
       run: this.run ? this.run.debugState() : null,
       director: this.director ? this.director.debugState() : null,
       enemies: this.enemies ? this.enemies.debugState() : null,

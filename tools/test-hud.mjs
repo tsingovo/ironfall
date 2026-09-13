@@ -825,7 +825,16 @@ group('G4 菜单：变体 / 键盘导航 / 点击 / 意图');
 
   intents.length = 0;
   doc.dispatchEvent({ type: 'keydown', code: 'Digit8', key: '8' });
-  eq('数字键 8 触发 open_credits', intents.length && intents[0].name, 'open_credits');
+  eq('数字键 8 触发 open_lan', intents.length && intents[0].name, 'open_lan');
+
+  intents.length = 0;
+  doc.dispatchEvent({ type: 'keydown', code: 'Digit9', key: '9' });
+  eq('数字键 9 触发 open_credits', intents.length && intents[0].name, 'open_credits');
+
+  // 数字键 0 映射到第 10 项（退出游戏）
+  intents.length = 0;
+  doc.dispatchEvent({ type: 'keydown', code: 'Digit0', key: '0' });
+  eq('数字键 0 触发 quit_game', intents.length && intents[0].name, 'quit_game');
 
   // Esc
   intents.length = 0;
@@ -844,7 +853,15 @@ group('G4 菜单：变体 / 键盘导航 / 点击 / 意图');
 
   hud.showMenu('main');
   intents.length = 0;
+  root.querySelector('#menu-main-item-7').click();
+  eq('主菜单提供局域网联机并发出 open_lan', intents.length && intents[0].name, 'open_lan');
+
+  intents.length = 0;
   root.querySelector('#menu-main-item-8').click();
+  eq('主菜单仍提供制作名单', intents.length && intents[0].name, 'open_credits');
+
+  intents.length = 0;
+  root.querySelector('#menu-main-item-9').click();
   eq('主菜单提供退出游戏并发出 quit_game', intents.length && intents[0].name, 'quit_game');
 
   // 阵亡统计
