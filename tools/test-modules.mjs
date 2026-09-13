@@ -363,18 +363,43 @@ if (wp) {
   const expectedAim = mods['src/core/math.js'].dirFromAngles(0.22, 0.06, new Float32Array(3));
   check('连续射击弹道与屏幕相机后坐方向完全一致',
     actualAim.every((v, i) => Math.abs(v - expectedAim[i]) < 1e-6));
-  check('开枪镜头俯仰/横摆与屏幕抖动默认完全关闭',
-    mods['src/core/config.js'].CFG.fx.fireCameraRecoil === false
+  check('枪械后坐默认保留但额外屏幕震动关闭',
+    mods['src/core/config.js'].CFG.fx.fireCameraRecoil === true
       && mods['src/core/config.js'].CFG.fx.fireScreenShake === false);
   probe.mods = { weapon: { recoilMul: 1 } };
   probe.rng = () => 0.5;
-  probe.recoil.patternIndex = 0;
+  probe.recoil = { patternIndex: 0, aimPitch: 0, aimYaw: 0, visPitch: 0, visYaw: 0, recoveryDelay: 0 };
   const noShakeState = { adsT: 0, spreadExtra: 0 };
   probe._applyRecoil(wp.WEAPONS.r99, noShakeState);
-  check('实际开火后四个相机/瞄准后坐偏移保持为零且枪械散布仍累积',
-    probe.recoil.aimPitch === 0 && probe.recoil.aimYaw === 0
-      && probe.recoil.visPitch === 0 && probe.recoil.visYaw === 0
+  check('实际开火后恢复可控枪械后坐且散布仍累积',
+    probe.recoil.aimPitch > 0 && probe.recoil.visPitch > 0
       && noShakeState.spreadExtra > 0);
+
+  // 严重卡顿或未命中的远射线会让计时器积累很大的负数；一帧只能消费一发，
+  // 绝不能用 catch-up while 瞬间扣掉 8 发并马上触发换弹。
+  const fireState = {
+    ...probe._newState?.('r99'), id: 'r99', ammo: 24, reserve: Infinity,
+    reloading: false, reloadT: 0, reloadDuration: wp.WEAPONS.r99.reloadTime,
+    reloadCueIndex: 0, ads: false, adsT: 0, spreadExtra: 0,
+    shotsFiredThisBurst: 0, timeSinceShot: 99, charging: false, chargeT: 0,
+    chargeReady: false, chargeShotsRemaining: 0, chargeAfterReload: false,
+    bolting: false, chambered: true,
+  };
+  const fireProbe = Object.create(wp.WeaponSystem.prototype);
+  fireProbe.slots = [{ id: 'r99' }]; fireProbe.slotIndex = 0;
+  fireProbe.state = new Map([['r99', fireState]]);
+  fireProbe.mods = { weapon: {} };
+  fireProbe.vm = { equipT: 1, holsterT: 0 };
+  fireProbe.player = { setAdsFovMul() {} };
+  fireProbe.projectiles = { update() {} };
+  fireProbe.recoil = { aimPitch: 0, aimYaw: 0, visPitch: 0, visYaw: 0, patternIndex: 0, recoveryDelay: 0 };
+  fireProbe._fireTimer = -2; fireProbe._triggerHeld = true;
+  fireProbe._updateRecoil = () => {};
+  fireProbe._updateViewmodel = () => {};
+  fireProbe._fire = (state) => { state.ammo--; };
+  fireProbe.update(0, { fire: true });
+  check('严重欠帧或未命中后单帧最多只扣一发弹药',
+    fireState.ammo === 23 && fireProbe._fireTimer > 0 && !fireState.reloading);
 
   // 音频名必须存在
   const audio = mods['src/audio/audio.js'];

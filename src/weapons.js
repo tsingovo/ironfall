@@ -1226,23 +1226,22 @@ export class WeaponSystem {
     const wantsFire = (fullAuto ? !!input.fire : (!!input.fire && !this._triggerHeld))
       && !charging && !boltLocked;
 
-    if (wantsFire && this.vm.equipT >= 1 && !st.reloading) {
-      // 用 while 补发：即使帧率低于射速也不会丢发
-      let guard = 0;
-      while (this._fireTimer <= 0 && guard++ < 8) {
-        if (st.ammo <= 0) {
-          Events.emit('audio:play', { name: def.emptySound });
-          if (st.reserve > 0) this._startReload(st, def);
-          this._fireTimer = 0.22;
-          break;
-        }
+    if (wantsFire && this.vm.equipT >= 1 && !st.reloading && this._fireTimer <= 0) {
+      // 每个模拟帧最多发射一发。旧逻辑会在未命中的长射线/卡顿帧之后用 while
+      // “补发”最多 8 发，表现为瞬间吞掉大量弹药并反复自动换弹。
+      // 丢弃历史欠账不会影响正常 60/120Hz 射速，却能保证一次 update 只扣一发。
+      if (st.ammo <= 0) {
+        Events.emit('audio:play', { name: def.emptySound });
+        if (st.reserve > 0) this._startReload(st, def);
+        this._fireTimer = 0.22;
+      } else {
         this._fire(st, def, input);
         if (def.boltAction) {
           // 栓动枪的下一次可射击时间由拉栓决定，而不是再叠加一段
           // 过长的 RPM 间隔；拉栓结束后扣扳机即可开火。
           this._fireTimer = Math.max(0.01, st.boltDuration || def.boltTime || 0.34);
         } else {
-          this._fireTimer += this._fireInterval(def);
+          this._fireTimer = this._fireInterval(def);
         }
       }
     } else if (this._fireTimer < 0) {
@@ -1425,8 +1424,7 @@ export class WeaponSystem {
     }
     Events.emit('weapon:fire', { def, ammo: st.ammo, charged });
     Events.emit('audio:play', { name: def.fireSound, gain: 0.9 });
-    // 开火不再产生屏幕抖动（用户反馈"射击时的屏幕抖动可以取消"）。
-    // 后坐力仍通过相机俯仰（recoilVisual 通道）与准心扩散体现，射击手感不受影响。
+    // 开火不再产生额外的随机屏幕震动；枪械本身的后坐/压枪仍正常保留。
     // 想恢复抖动：把 CFG.fx.fireScreenShake 设为 true。
     if (CFG.fx.fireScreenShake) {
       Events.emit('fx:shake', {
