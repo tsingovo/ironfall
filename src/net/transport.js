@@ -60,6 +60,7 @@ export class NetTransport {
     this._connectResolve = null;
     this._connectReject = null;
     this._connectTimer = 0;
+    this._reconnectTimer = 0;
     this._joinPayload = null;
     this.stats = { sent: 0, sentBytes: 0, received: 0, receivedBytes: 0, dropped: 0, reconnects: 0 };
   }
@@ -109,7 +110,10 @@ export class NetTransport {
       this._setStatus(NET_STATUS.FAILED, this.lastError);
       return Promise.reject(new Error(this.lastError));
     }
+    this.disconnect('重新连接');
     this._closedByUser = false;
+    this._reconnects = 0;
+    this.lastError = '';
     this._joinPayload = {
       name: String(join.name || '玩家').slice(0, 16),
       room: String(join.room || 'default').slice(0, 32),
@@ -132,22 +136,26 @@ export class NetTransport {
       return;
     }
     this._ws = ws;
+    this._connectTimer = setTimeout(() => {
+      if (this._ws === ws) this._failConnect(new Error('连接或入房握手超时'));
+    }, this.timeoutMs);
     ws.onopen = () => {
+      if (this._ws !== ws) return;
       this._setStatus(NET_STATUS.HANDSHAKING);
       this._sendRaw({ t: 'hello', ...this._joinPayload });
-      this._connectTimer = setTimeout(() => {
-        this.lastError = '服务器未在超时前完成入房握手';
-        this._failConnect(new Error(this.lastError));
-      }, this.timeoutMs);
     };
-    ws.onmessage = (ev) => this._onMessage(ev && ev.data);
+    ws.onmessage = (ev) => { if (this._ws === ws) this._onMessage(ev && ev.data); };
     ws.onerror = () => {
+      if (this._ws !== ws) return;
       this.lastError = this.lastError || '连接出错';
     };
-    ws.onclose = (ev) => this._onClose(ev);
+    ws.onclose = (ev) => { if (this._ws === ws) this._onClose(ev); };
   }
 
   _failConnect(err) {
+    const stale = this._ws;
+    this._ws = null;
+    if (stale) { try { stale.close(); } catch (_) {} }
     this.lastError = err && err.message ? err.message : String(err);
     if (this._connectTimer) { clearTimeout(this._connectTimer); this._connectTimer = 0; }
     const reject = this._connectReject;
@@ -195,6 +203,7 @@ export class NetTransport {
   }
 
   _onClose(ev) {
+    if (this._connectTimer) { clearTimeout(this._connectTimer); this._connectTimer = 0; }
     this._stopPing();
     const code = ev && ev.code ? ev.code : 0;
     const reason = (ev && ev.reason) || '';
@@ -223,6 +232,7 @@ export class NetTransport {
   }
 
   _scheduleReconnect() {
+    if (this._reconnectTimer) return;
     if (!this.autoReconnect || this._closedByUser) return;
     if (this._reconnects >= this.maxReconnects) {
       this.lastError = this.lastError || '重连次数已用尽';
@@ -233,7 +243,8 @@ export class NetTransport {
     this.stats.reconnects++;
     const delay = Math.min(MAX_BACKOFF_MS, 400 * Math.pow(1.6, this._reconnects - 1));
     this._setStatus(NET_STATUS.RECONNECTING, `第 ${this._reconnects} 次重连`);
-    setTimeout(() => {
+    this._reconnectTimer = setTimeout(() => {
+      this._reconnectTimer = 0;
       if (this._closedByUser || this.online) return;
       this._openSocket();
     }, delay);
@@ -243,6 +254,12 @@ export class NetTransport {
     this._stopPing();
     this._pingTimer = setInterval(() => {
       if (!this.online) return;
+      const oldest = this._pendingPings.values().next().value;
+      if (oldest != null && Date.now() - oldest > this.timeoutMs) {
+        this._stopPing();
+        this._failConnect(new Error('心跳超时，正在重连'));
+        return;
+      }
       const id = ++this._pingSeq;
       this._pendingPings.set(id, Date.now());
       if (this._pendingPings.size > 16) {
@@ -299,6 +316,11 @@ export class NetTransport {
   /** 主动断开；不再自动重连 */
   disconnect(reason) {
     this._closedByUser = true;
+    if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = 0; }
+    if (this._connectTimer) { clearTimeout(this._connectTimer); this._connectTimer = 0; }
+    const reject = this._connectReject;
+    this._connectResolve = this._connectReject = null;
+    if (reject) reject(new Error(reason || '连接已取消'));
     this._stopPing();
     if (this._ws && this._ws.readyState === 1) {
       this._sendRaw({ t: 'bye' });

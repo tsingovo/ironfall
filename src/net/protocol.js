@@ -83,7 +83,10 @@ export function parseServerAddress(input, opts = {}) {
 
   // 端口只在“确实写了”的时候校验。写成 `port = Number(x) || DEFAULT` 会让
   // 显式的 `:0` 静默变成默认端口，玩家输错了却连到别的地方去。
-  let port = DEFAULT_SERVER_PORT;
+  // 完整穿透 URL 必须沿用标准 HTTP/TLS 端口，不能擅自追加内网端口。
+  let port = explicitProto
+    ? (explicitProto === 'https' || explicitProto === 'wss' ? 443 : 80)
+    : DEFAULT_SERVER_PORT;
   if (portStr !== '') {
     port = Number(portStr);
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
