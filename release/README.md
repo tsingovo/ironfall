@@ -1,68 +1,44 @@
-# IRONFALL 发布包
+# IRONFALL 发行包 · 2.0.10
 
-- 当前版本：**2.0.7**
-- 对应标签：`v2.0.7`
-- Windows 离线包：`IRONFALL-2.0.7-offline.zip`（349.6 KB）
-- SHA-256：`ECD8F3ADFEEF2D30E027EB37389DD5C7202879CF95645852EC139CAB7007B99D`
+- 本地已打包：`IRONFALL-2.0.10-offline.zip`
+- 文件大小：781487 字节
+- SHA-256：`5BA379AE68C8CBA1CC09ACE7BFE739D29BBD9E06AE7551FF90F23362856AAF34`
+- 发行包由维护者手动上传。本说明不代表已经创建 `v2.0.10` 标签或线上 Release。
+- 二进制 ZIP 不再跟踪进 Git；push 代码不会自动上传发行附件。
 
-## 怎么给玩家
+## 使用
 
-完整解压 ZIP 后双击 `开始游戏.cmd`。
+完整解压，不要在 ZIP 内直接运行，也不要使用旧目录的脚本。
 
-- **不要**在压缩包内直接运行（`tools/` 路径读不到）
-- **不要**继续使用旧版本目录里的启动脚本
-- 解压出来是这 5 项：`开始游戏.cmd`、`IRONFALL.html`、`使用说明.txt`、`LICENSE`、`tools/`
+- 单机：`开始游戏.cmd`，默认端口 18240。
+- 联机：`开始联机.cmd`，默认端口 18200，保持服务器窗口开启，再在游戏大厅创建/加入房间。
+- 首次没有 Node.js 时，先运行发行包中的 `开始游戏.cmd` 下载便携运行环境，再退出游戏并启动联机。开发仓库入口不负责下载环境。
+- TCP 穿透目标：`127.0.0.1:18200`。队友填写穿透工具分配的域名和公网端口。
+- 重复启动联机会替换同目录旧服务、断开旧房间，队友需重新加入。不会自动关闭其他目录或无关程序。
+- EADDRINUSE 表示端口被占用；查看 `lan-error.log`。更多说明见根目录 README。
 
-启动器会自动备好运行环境（系统没有 Node.js 时下载便携版），
-然后用 Chrome/Edge 的**独立 App 窗口**打开 —— 无标签栏，`Ctrl+W` 不会误关游戏。
+## 包内文件
 
-## 下载地址
+`开始游戏.cmd`、`开始联机.cmd`、`IRONFALL.html`、`index.html`、`使用说明.txt`、`RELEASE_NOTES.md`、`LICENSE`，以及 `tools/launch-app.mjs`、`tools/serve-single.mjs`、`tools/lan-server.mjs`。
 
-| 平台 | 链接 |
-|---|---|
-| Gitee（推荐，公开可访问） | https://gitee.com/tsingovo/ironfall/releases/download/v2.0.7/IRONFALL-2.0.7-offline.zip |
-| GitHub | https://github.com/tsingovo/ironfall/releases/tag/v2.0.7 |
+## 发布与校验
 
-> GitHub 账号目前被其滥用检测系统标记、正在人工复核，未登录访客访问会得到 404。
-> 复核结束前请使用 Gitee 链接。
+手动创建发行版，选择已核对的提交/标签，上传 ZIP 并复制包内 RELEASE_NOTES.md。不要把旧版链接当作最新版下载地址。
 
-## 校验下载是否完整
+- Gitee 发行列表：https://gitee.com/tsingovo/ironfall/releases
+- GitHub 发行列表：https://github.com/tsingovo/ironfall/releases
 
 ```powershell
-# Windows PowerShell
-Get-FileHash .\IRONFALL-2.0.7-offline.zip -Algorithm SHA256
+Get-FileHash .\IRONFALL-2.0.10-offline.zip -Algorithm SHA256
 ```
 
-```bash
-# macOS / Linux
-shasum -a 256 IRONFALL-2.0.7-offline.zip
+## 重新构建
+
+先准备 `dist/RELEASE_NOTES.md`，并确保 HUD 与启动器的 BUILD 版本一致，然后：
+
+```powershell
+node tools/build-standalone.mjs
+node tools/build-release.mjs 2.0.10
 ```
 
-结果应当等于上面记录的 SHA-256。
-
-> 更正说明：本文件此前记录的 `C0353BC0…` 实际是 **2.0.4** 的校验和
->（2.0.7 的 README 误用了旧版本的值），已在此更正。
-> 下表由各 zip 实际计算得出，可直接用于校验。
-
-## 各版本校验和
-
-| 版本 | 大小 | SHA-256 |
-|---|---|---|
-| 2.0.2 | 348.4 KB | `D273E16A37B9625D7851FA7AD7C82D5838FDCC28A1CAFAFFD9DAE7AB0BAEBA02` |
-| 2.0.3 | 349.0 KB | `E07724BE33CD0F7CB4852C3359E3BA5379677BC32C6E6CE2280D199695B473F6` |
-| 2.0.4 | 348.6 KB | `C0353BC0C9E8431DD51D4C9F3FBD0C6E1AF7F4E12ABF3880001BD8477C45A574` |
-| 2.0.5 | 348.5 KB | `6655AE6E85CE883F969EAB7475C4A7F258948D23BA3019E1214BE995E540E237` |
-| 2.0.6 | 348.4 KB | `447B9791E9C85A646E5F34EEDDB3AD157D452BEB1DA269C8C802032066D2C5A1` |
-| **2.0.7** | **349.6 KB** | **`ECD8F3ADFEEF2D30E027EB37389DD5C7202879CF95645852EC139CAB7007B99D`** |
-
-已验证：`release/IRONFALL-2.0.7-offline/IRONFALL.html` 与 zip 内的同名文件
-SHA-256 完全一致，说明 zip 与解压目录同源、不存在版本错配。
-
-## 怎么重新构建
-
-```bash
-node tools/build-standalone.mjs        # → dist/IRONFALL.html（单文件离线版）
-node tools/build-release.mjs 2.0.7     # → dist/IRONFALL-2.0.7-offline.zip
-```
-
-打包器是零依赖自研实现（含手写 ZIP 写入器），不引入任何第三方库。
+重新构建后重新计算校验和；不要沿用其他 ZIP 的数值。真实校园网多人联机与长时间稳定性待实机验证。
