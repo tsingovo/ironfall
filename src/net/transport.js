@@ -70,6 +70,24 @@ export class NetTransport {
     try { return this._ws ? (this._ws.bufferedAmount || 0) : 0; } catch (_e) { return 0; }
   }
 
+  /**
+   * 把连接目标换成页面之外的服务器（公网直连）。
+   *
+   * 这是“直连 IP”能成立的关键：WebSocket 不受同源策略限制（浏览器不会拦截
+   * 跨源 ws 连接，服务端也不校验 Origin），所以“页面从哪儿加载”和“连哪台
+   * 服务器”可以完全解耦。已在线时拒绝改地址，避免把正在用的连接指向别处。
+   */
+  setEndpoint(url) {
+    if (this.online || this.status === NET_STATUS.HANDSHAKING) {
+      this.lastError = '已连接状态下不能切换服务器';
+      return false;
+    }
+    const next = String(url || '').trim();
+    if (!next) { this.lastError = '服务器地址为空'; return false; }
+    this.url = next;
+    return true;
+  }
+
   _setStatus(status, detail) {
     if (this.status === status) return;
     this.status = status;
@@ -185,9 +203,12 @@ export class NetTransport {
       this._setStatus(NET_STATUS.CLOSED, reason);
       return;
     }
-    // 服务器主动踢出（房间满、名字非法等）不重连，避免无意义的重试风暴
-    const fatal = code === 4000 || code === 4001 || code === 4002;
-    this.lastError = reason || (fatal ? '被服务器断开' : '与服务器断开连接');
+    // 服务器主动拒绝（房间满、协议版本不符）不重连：重试多少次结果都一样，
+    // 只会变成重试风暴。心跳超时（4001）恰恰相反——那是网络抖了一下，
+    // 公网直连时很常见，必须重连。
+    const fatal = code === 4000 || code === 4002;
+    this.fatalCode = fatal ? code : 0;
+    this.lastError = reason || (fatal ? '被服务器拒绝' : '与服务器断开连接');
     this._setStatus(NET_STATUS.RECONNECTING, this.lastError);
     // 首次连接还没成功就断开：让 connect() 的 Promise 以失败结束
     if (this._connectReject) {

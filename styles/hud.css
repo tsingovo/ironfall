@@ -2158,3 +2158,58 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* 公网直连：地址输入 + 连接/刷新 + 服务器列表 */
+.menu-lan-btn {
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--hud-text);
+  background: var(--hud-panel-solid);
+  border: 1px solid var(--hud-line);
+  border-radius: 2px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.menu-lan-btn--primary {
+  border-color: var(--hud-cold);
+  color: var(--hud-cold-soft);
+}
+.menu-lan-servers {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.menu-lan-server {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  color: var(--hud-text);
+  background: var(--hud-panel);
+  border: 1px solid var(--hud-line-soft);
+  border-radius: 2px;
+  cursor: pointer;
+}
+.menu-lan-server-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.menu-lan-server-state {
+  font-size: 11px;
+  color: var(--hud-good);
+  white-space: nowrap;
+}
+.menu-lan-server--off {
+  opacity: 0.5;
+  cursor: default;
+}
+.menu-lan-server--off .menu-lan-server-state {
+  color: var(--hud-text-mute);
+}

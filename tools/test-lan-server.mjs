@@ -2,6 +2,7 @@
 // 纯 Node，无需浏览器。用法: node tools/test-lan-server.mjs
 
 import { createLanServer, encodeFrame, decodeFrame, wsAccept, sanitizeName } from './lan-server.mjs';
+import { parseServerAddress, DEFAULT_SERVER_PORT } from '../src/net/protocol.js';
 
 let pass = 0;
 let fail = 0;
@@ -101,12 +102,100 @@ check('wsAccept 结果符合 RFC 6455 示例',
   check('拒绝分片的控制帧', !!(dec && dec.error), dec && dec.error);
 }
 {
-  const key = randomKey();
-  void key;
   check('sanitizeName 去控制字符并截断', sanitizeName('  a\u0001b  ') === 'ab' && sanitizeName('x'.repeat(40)).length === 16);
 }
 
-function randomKey() { return 'k'; }
+// ---------------------------------------------------------------- 1b. 直连地址解析
+
+section('1b. 服务器地址解析（公网直连）');
+
+{
+  const eq = (name, input, expect, opts) => {
+    const r = parseServerAddress(input, opts);
+    const got = r.ok
+      ? { host: r.host, port: r.port, room: r.room, secure: r.secure, ws: r.wsUrl, http: r.httpUrl }
+      : { error: r.error };
+    check(name, JSON.stringify(got) === JSON.stringify(expect), `得到 ${JSON.stringify(got)}`);
+  };
+
+  eq('裸 IP 补默认端口',
+    '1.2.3.4',
+    { host: '1.2.3.4', port: DEFAULT_SERVER_PORT, room: '', secure: false,
+      ws: `ws://1.2.3.4:${DEFAULT_SERVER_PORT}/ws`, http: `http://1.2.3.4:${DEFAULT_SERVER_PORT}` });
+
+  eq('IP:端口',
+    '192.168.1.5:19000',
+    { host: '192.168.1.5', port: 19000, room: '', secure: false,
+      ws: 'ws://192.168.1.5:19000/ws', http: 'http://192.168.1.5:19000' });
+
+  eq('域名',
+    'game.example.com',
+    { host: 'game.example.com', port: DEFAULT_SERVER_PORT, room: '', secure: false,
+      ws: `ws://game.example.com:${DEFAULT_SERVER_PORT}/ws`,
+      http: `http://game.example.com:${DEFAULT_SERVER_PORT}` });
+
+  eq('显式 ws:// 且带 /ws 路径不重复追加',
+    'ws://1.2.3.4:18200/ws',
+    { host: '1.2.3.4', port: 18200, room: '', secure: false,
+      ws: 'ws://1.2.3.4:18200/ws', http: 'http://1.2.3.4:18200' });
+
+  eq('https 升级为 wss 并保留子路径',
+    'https://example.com/ironfall',
+    { host: 'example.com', port: DEFAULT_SERVER_PORT, room: '', secure: true,
+      ws: `wss://example.com:${DEFAULT_SERVER_PORT}/ironfall/ws`,
+      http: `https://example.com:${DEFAULT_SERVER_PORT}/ironfall` });
+
+  eq('# 后缀指定房间',
+    '1.2.3.4:18200#raiders',
+    { host: '1.2.3.4', port: 18200, room: 'raiders', secure: false,
+      ws: 'ws://1.2.3.4:18200/ws', http: 'http://1.2.3.4:18200' });
+
+  eq('IPv6 字面量',
+    '[fe80::1]:18200',
+    { host: 'fe80::1', port: 18200, room: '', secure: false,
+      ws: 'ws://[fe80::1]:18200/ws', http: 'http://[fe80::1]:18200' });
+
+  eq('HTTPS 页面里裸地址默认走 wss',
+    'game.example.com',
+    { host: 'game.example.com', port: DEFAULT_SERVER_PORT, room: '', secure: true,
+      ws: `wss://game.example.com:${DEFAULT_SERVER_PORT}/ws`,
+      http: `https://game.example.com:${DEFAULT_SERVER_PORT}` },
+    { secure: true });
+
+  {
+    // HTTPS 页面里没写协议的裸地址：默认按 wss 试（对方可能真有 TLS），
+    // 只在结果上标一个风险位，让连接失败时能补一句可读的提示。
+    const r = parseServerAddress('1.2.3.4:18200', { secure: true });
+    check('HTTPS 页面里裸地址默认走 wss 并标出混内容风险',
+      r.ok === true && r.secure === true && r.mixedContentRisk === true
+        && r.wsUrl.startsWith('wss://'), JSON.stringify(r));
+  }
+  {
+    const r = parseServerAddress('ws://1.2.3.4:18200', { secure: true });
+    check('HTTPS 页面里显式 ws:// 被明确拒绝并给出可读原因',
+      r.ok === false && r.mixedContent === true && /HTTPS/.test(r.error), JSON.stringify(r));
+  }
+  {
+    const forced = parseServerAddress('wss://1.2.3.4:18200', { secure: true });
+    check('显式 wss 在 HTTPS 页面下放行且无风险位',
+      forced.ok === true && forced.mixedContentRisk === false, JSON.stringify(forced));
+  }
+  {
+    const cases = [
+      ['', '空输入'], ['   ', '空白输入'], [':18200', '只有端口'], ['1.2.3.4:0', '端口 0'],
+      ['1.2.3.4:99999', '端口越界'], ['1.2.3.4:abc', '端口非数字'], ['[fe80::1', 'IPv6 缺 ]'],
+      ['1.2.3.4:', '冒号后为空'], ['http://', '只有协议'],
+    ];
+    const bad = cases.filter(([input]) => parseServerAddress(input).ok !== false);
+    check('非法地址全部被拒', bad.length === 0, bad.map(([i, n]) => `${n}(${i})`).join(', '));
+  }
+  {
+    // 不带方括号的 IPv6 也应当被认出来，而不是当成 host:port 切开
+    const r = parseServerAddress('fe80::1');
+    check('无方括号 IPv6 也按字面量处理',
+      r.ok === true && r.host === 'fe80::1' && r.wsUrl.startsWith('ws://[fe80::1]:'), JSON.stringify(r));
+  }
+}
 
 // ---------------------------------------------------------------- 2. 房间与中继
 
@@ -118,7 +207,7 @@ const address = await server.listen();
 check('服务器监听成功', !!address && address.port === PORT, JSON.stringify(address));
 
 const clients = [];
-function connect(name) {
+function connect(name, opts = {}) {
   return new Promise((resolvePromise, reject) => {
     const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`);
     const state = { ws, name, messages: [], inbox: [], byType: new Map(), closed: false, closeCode: 0 };
@@ -134,7 +223,12 @@ function connect(name) {
     ws.addEventListener('close', (ev) => { state.closed = true; state.closeCode = ev.code; });
     ws.addEventListener('error', () => { /* 断言由超时兜底 */ });
     ws.addEventListener('open', () => {
-      ws.send(JSON.stringify({ t: 'hello', name, version: 'test', room: 'r1' }));
+      ws.send(JSON.stringify({
+        t: 'hello',
+        name,
+        version: opts.version === undefined ? 'test' : opts.version,
+        room: opts.room || 'r1',
+      }));
       resolvePromise(state);
     });
     setTimeout(() => reject(new Error('连接超时: ' + name)), 3000);
@@ -222,8 +316,7 @@ try {
   check('拒绝目录穿越', traversal === 404 || traversal === 403, String(traversal));
 
   // 大消息（模拟快照）聚合帧
-  if (!b.closed) {
-    const payload = { t: 'game', data: { k: 'big', blob: 'x'.repeat(70000) } };
+  if (!b.closed) {    const payload = { t: 'game', data: { k: 'big', blob: 'x'.repeat(70000) } };
     b.ws.send(JSON.stringify(payload));
     const big = await waitFor(() => (last(extra[0], 'game') || {}), 3000, '聚合帧转发');
     const got = await waitFor(() => {
@@ -233,6 +326,22 @@ try {
     void big;
     check('70 KB 消息完整转发', got.data.blob.length === 70000);
   }
+
+  // 协议版本闸门：公网直连时客户端版本可能不一致，必须在握手阶段就明确拒绝，
+  // 而不是让它连上之后“什么都不同步”。
+  const otherRoom = await connect('异版本', { version: '999', room: 'r2' });
+  clients.push(otherRoom);
+  const okWelcome = await waitFor(() => last(otherRoom, 'welcome'), 2500, 'r2 welcome');
+  check('新房间的第一个客户端定下版本并正常入房', !!okWelcome);
+
+  const mismatch = await connect('旧版本', { version: '0.9', room: 'r2' });
+  clients.push(mismatch);
+  const verr = await waitFor(() => last(mismatch, 'error'), 2500, 'version mismatch');
+  check('版本不一致被服务器拒绝', verr.code === 'version_mismatch', JSON.stringify(verr));
+  check('拒绝原因里带上了两边的版本号',
+    /999/.test(verr.message) && /0\.9/.test(verr.message), verr.message);
+  await waitFor(() => mismatch.closed, 2500, 'mismatch closed');
+  check('被拒客户端连接已关闭且关闭码可识别', mismatch.closeCode === 4002, String(mismatch.closeCode));
 } catch (err) {
   check('房间测试整体执行', false, err && err.message);
 } finally {

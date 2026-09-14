@@ -195,6 +195,10 @@ await mkdir(OUT, { recursive: true });
 const chrome = requireChrome('test-lan');
 const server = createLanServer({ port: PORT, host: '127.0.0.1' });
 await server.listen();
+// 第二台服务器，模拟“公网服务器”：页面从 server 加载，但实际连到这台。
+const PUB_PORT = PORT + 1;
+const publicServer = createLanServer({ port: PUB_PORT, host: '127.0.0.1' });
+await publicServer.listen();
 process.stdout.write(`局域网服务器: http://127.0.0.1:${PORT}/\n`);
 
 const host = new Client('host', join(tmpdir(), 'ironfall-lan-host-' + Date.now()));
@@ -690,12 +694,91 @@ try {
 
   const netState = await host.ev('window.__IRONFALL__.game.lan.debugState()');
   check('会话统计里两位玩家都在线', !!(netState && netState.peers === 2), JSON.stringify(netState && netState.peers));
+
+  // ------------------------------------------------------------ 10. 公网直连
+  section('10. 公网直连：页面来源与服务器解耦');
+
+  const guestOrigin = await guest.ev('location.origin');
+  check('房客页面确实来自第一台服务器', guestOrigin === `http://127.0.0.1:${PORT}`, String(guestOrigin));
+
+  // 非法地址必须给出可读错误，而不是静默失败
+  const badAddr = await guest.ev(`(async () => {
+    const g = window.__IRONFALL__.game;
+    g.lan.leave();
+    const ok = await g._lanConnectTo('1.2.3.4:0');
+    return { ok, err: g.lan.joinError };
+  })()`);
+  check('非法地址被拒且给出可读原因',
+    !!(badAddr && badAddr.ok === false && /端口不合法/.test(badAddr.err)), JSON.stringify(badAddr));
+
+  await host.ev('window.__IRONFALL__.game.lan.leave()');
+
+  // 两端都直连到第二台服务器。注意地址是玩家手输的形式（host:port），
+  // 不是页面地址——这正是“直连 IP”要证明的事。
+  const pubAddr = `127.0.0.1:${PUB_PORT}`;
+  const hostDirect = await host.ev(`(async () => {
+    const g = window.__IRONFALL__.game;
+    const ok = await g.lan.connectTo(${JSON.stringify(pubAddr)}, 'guest', '公网甲');
+    return { ok, url: g.lan._t.url, isHost: g.lan.isHost, room: g.lan.roomId, err: g.lan.joinError };
+  })()`);
+  check('房主侧直连成功（地址写的是 host:port）',
+    !!(hostDirect && hostDirect.ok === true), JSON.stringify(hostDirect));
+  check('连接目标已切到第二台服务器',
+    !!(hostDirect && hostDirect.url === `ws://127.0.0.1:${PUB_PORT}/ws`), JSON.stringify(hostDirect.url));
+  check('第一个连上公网服的人被服务器判为房主',
+    !!(hostDirect && hostDirect.isHost === true), JSON.stringify(hostDirect));
+
+  const guestDirect = await guest.ev(`(async () => {
+    const g = window.__IRONFALL__.game;
+    const ok = await g._lanConnectTo(${JSON.stringify(pubAddr)});
+    return { ok, url: g.lan._t.url, isHost: g.lan.isHost, err: g.lan.joinError };
+  })()`);
+  check('房客侧直连成功', !!(guestDirect && guestDirect.ok === true), JSON.stringify(guestDirect));
+  check('后加入者被服务器判为房客',
+    !!(guestDirect && guestDirect.isHost === false), JSON.stringify(guestDirect));
+
+  const pubPeers = await host.waitFor('window.__IRONFALL__.game.lan.remotes.size', 10000, 'public room peers');
+  check('两台客户端在公网服上互相可见', pubPeers === 1, String(pubPeers));
+
+  const pubStats = publicServer.stats();
+  check('公网服上确实有 2 个连接', pubStats.peers === 2, JSON.stringify(pubStats));
+  check('第一台服务器上已无人',
+    server.stats().peers === 0, JSON.stringify(server.stats()));
+
+  // 页面还是原来的来源，只有连接目标变了——这就是解耦的证明
+  const originAfter = await guest.ev('location.origin');
+  check('房客页面来源没有改变（只有连接目标变了）',
+    originAfter === guestOrigin, String(originAfter));
+
+  // 服务器列表探测：一台在线、一台离线
+  const probe = await guest.ev(`(async () => {
+    const g = window.__IRONFALL__.game;
+    const r = await g.lan.probeServers([${JSON.stringify(pubAddr)}, '127.0.0.1:1']);
+    return r.map((x) => ({ address: x.address, ok: x.ok, players: x.players, error: x.error }));
+  })()`);
+  check('服务器列表能探到在线服务器的玩家数',
+    !!(probe && probe[0] && probe[0].ok === true && probe[0].players === 2), JSON.stringify(probe));
+  check('离线服务器被标为不可用且不阻塞其他项',
+    !!(probe && probe[1] && probe[1].ok === false), JSON.stringify(probe));
+
+  const listed = await guest.ev(`(() => {
+    const g = window.__IRONFALL__.game;
+    g._pushLanHudState();
+    return { self: g.lan.lobbyState().selfServer, addr: g.lan.lobbyState().directAddress };
+  })()`);
+  check('大厅状态里带上了本页服务器与直连地址',
+    !!(listed && listed.self === `127.0.0.1:${PORT}`), JSON.stringify(listed));
+
+  await host.shot('direct-connect');
+  await guest.shot('direct-connect');
+  check('直连状态截图已保存', true);
 } catch (err) {
   check('端到端流程整体执行', false, err && err.message ? err.message : String(err));
 } finally {
   host.kill();
   guest.kill();
   await server.close();
+  await publicServer.close();
   if (!KEEP) {
     await rm(host.userDataDir, { recursive: true, force: true }).catch(() => {});
     await rm(guest.userDataDir, { recursive: true, force: true }).catch(() => {});

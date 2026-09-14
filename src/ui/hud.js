@@ -238,6 +238,7 @@ const STAT_ROWS = [
 // 局域网大厅的固定池规模：队友行与聊天行都在构造时建好，运行期只改文本。
 const LAN_PEER_ROWS = 4;
 const LAN_CHAT_ROWS = 6;
+const LAN_SERVER_ROWS = 5;
 
 // ── 小工具（全部纯函数，hot path 无分配） ───────────────────────────────────
 function num(v, fb = 0) {
@@ -1001,14 +1002,61 @@ export class HUD {
         }
         this._append(chatRow, chatLabel, chatInput);
 
-        this._append(body, status, nameRow, peers, chat, chatRow);
+        // 公网直连：地址输入 + 连接/刷新 + 服务器列表（固定池）
+        const directRow = mk('div', 'menu-' + kind + '-direct-row', 'menu-lan-field');
+        const directLabel = mk('span', 'menu-' + kind + '-direct-label', 'menu-lan-label');
+        if (directLabel) directLabel.textContent = '服务器';
+        const directInput = mk('input', 'menu-' + kind + '-direct-input', 'menu-lan-input');
+        if (directInput) {
+          if (directInput.setAttribute) directInput.setAttribute('type', 'text');
+          directInput.value = '';
+        }
+        const connectBtn = mk('button', 'menu-' + kind + '-direct-go', 'menu-lan-btn menu-lan-btn--primary');
+        if (connectBtn) connectBtn.textContent = '连接';
+        const refreshBtn = mk('button', 'menu-' + kind + '-direct-refresh', 'menu-lan-btn');
+        if (refreshBtn) refreshBtn.textContent = '刷新';
+        this._append(directRow, directLabel, directInput, connectBtn, refreshBtn);
+
+        const serverList = mk('div', 'menu-' + kind + '-servers', 'menu-lan-servers');
+        for (let i = 0; i < LAN_SERVER_ROWS; i++) {
+          const row = mk('button', 'menu-' + kind + '-server-' + i, 'menu-lan-server menu-lan-server--off');
+          const svName = mk('span', 'menu-' + kind + '-server-' + i + '-name', 'menu-lan-server-name');
+          const svState = mk('span', 'menu-' + kind + '-server-' + i + '-state', 'menu-lan-server-state');
+          this._append(row, svName, svState);
+          this._append(serverList, row);
+          el['lan-server-' + i] = row;
+          el['lan-server-name-' + i] = svName;
+          el['lan-server-state-' + i] = svState;
+          // 地址写在元素属性上，避免每次重绘都新建 JS 对象
+          row._lanAddr = '';
+          this._bind(row, 'click', () => {
+            const addr = row._lanAddr;
+            if (addr) this._intent('lan_direct_connect', { value: addr });
+          });
+        }
+
+        this._append(body, status, nameRow, directRow, serverList, peers, chat, chatRow);
         this._append(inner, body);
         el['lan-status'] = status;
         el['lan-name-input'] = nameInput;
         el['lan-chat-input'] = chatInput;
+        el['lan-direct-input'] = directInput;
 
         this._bind(nameInput, 'change', () => {
           this._intent('lan_set_name', { value: String(nameInput.value || '') });
+        });
+        this._bind(connectBtn, 'click', () => {
+          const addr = String(directInput.value || '').trim();
+          this._intent('lan_direct_connect', { value: addr });
+        });
+        this._bind(refreshBtn, 'click', () => {
+          this._intent('lan_refresh_servers', {});
+        });
+        this._bind(directInput, 'keydown', (e) => {
+          const code = (e && (e.code || e.key)) || '';
+          if (code !== 'Enter' && code !== 'NumpadEnter') return;
+          this._intent('lan_direct_connect', { value: String(directInput.value || '').trim() });
+          if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
         });
         this._bind(chatInput, 'keydown', (e) => {
           const code = (e && (e.code || e.key)) || '';
@@ -2334,6 +2382,12 @@ export class HUD {
         this._cls(this.el['lan-peer-' + i], 'menu-lan-peer--off', i !== 0);
       }
       for (let i = 0; i < LAN_CHAT_ROWS; i++) this._text(this.el['lan-chat-' + i], '');
+      for (let i = 0; i < LAN_SERVER_ROWS; i++) {
+        this._text(this.el['lan-server-name-' + i], i === 0 ? '（本页面所在服务器）' : '—');
+        this._text(this.el['lan-server-state-' + i], i === 0 ? '可直连' : '空位');
+        this._cls(this.el['lan-server-' + i], 'menu-lan-server--off', i !== 0);
+        this.el['lan-server-' + i]._lanAddr = '';
+      }
       return;
     }
 
@@ -2382,6 +2436,36 @@ export class HUD {
       const entry = chat[start + i];
       this._text(this.el['lan-chat-' + i],
         entry ? `${entry.self ? '我' : (entry.name || '队友')}：${entry.text}` : '');
+    }
+
+    // 服务器列表：第一项固定是“本页面所在服务器”，其后是探测结果。
+    const rows = [];
+    if (st.selfServer) rows.push({ address: st.selfServer, name: st.selfServer, self: true, ok: true, state: '本页所在' });
+    const probed = Array.isArray(st.serverStatus) ? st.serverStatus : [];
+    for (const s of probed) {
+      if (!s || !s.address) continue;
+      if (st.selfServer && s.address === st.selfServer) continue;
+      rows.push({
+        address: s.address,
+        name: (s.label || s.address),
+        ok: !!s.ok,
+        state: s.ok ? `${s.players} 人在线` : (s.error || '离线'),
+      });
+    }
+    for (let i = 0; i < LAN_SERVER_ROWS; i++) {
+      const row = this.el['lan-server-' + i];
+      const entry = rows[i];
+      if (!entry) {
+        this._text(this.el['lan-server-name-' + i], '—');
+        this._text(this.el['lan-server-state-' + i], '在“服务器”里输入地址可直连');
+        this._cls(row, 'menu-lan-server--off', true);
+        row._lanAddr = '';
+        continue;
+      }
+      this._text(this.el['lan-server-name-' + i], `${entry.self ? '★ ' : ''}${entry.name}`);
+      this._text(this.el['lan-server-state-' + i], entry.state);
+      this._cls(row, 'menu-lan-server--off', !entry.ok);
+      row._lanAddr = entry.address;
     }
   }
 

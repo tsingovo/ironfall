@@ -286,10 +286,16 @@ class Game {
       quality: 'high',
       autoFullscreen: true,   // 开始远征时自动全屏，规避 Ctrl+W 等浏览器保留快捷键
       playerName: '',         // 局域网联机昵称；留空时按房主/玩家自动取名
+      servers: [],            // 直连过的服务器地址（最近优先，最多 8 个）
       ...(saved || {}),
     };
     if (typeof settings.playerName !== 'string') settings.playerName = '';
     settings.playerName = settings.playerName.replace(/[\u0000-\u001f\u007f<>]/g, '').slice(0, 12);
+    if (!Array.isArray(settings.servers)) settings.servers = [];
+    settings.servers = settings.servers
+      .map((e) => String(typeof e === 'string' ? e : (e && e.address) || '').trim())
+      .filter((a) => a.length > 0 && a.length < 64)
+      .slice(0, 8);
     // 旧版 UI 把 0.2~10 直接当弧度/像素保存，导致最低档也快得不可用。
     if (!Number.isFinite(settings.sensitivity) || settings.sensitivity > 0.02) {
       settings.sensitivity = 0.0012;
@@ -1034,6 +1040,19 @@ class Game {
       case 'lan_join':
         this._lanConnect(false);
         break;
+      // 公网直连：连到页面之外的服务器。地址里可带 #房间名。
+      case 'lan_direct_connect': {
+        const addr = String((payload && payload.value) || '').trim();
+        if (!addr) {
+          if (this.hud) this.hud.toast('请输入服务器地址', '例如 1.2.3.4:18200 或 game.example.com', 'warn');
+          break;
+        }
+        this._lanConnectTo(addr);
+        break;
+      }
+      case 'lan_refresh_servers':
+        this._lanRefreshServers();
+        break;
       case 'lan_leave':
         if (this.lan) {
           this.lan.leave();
@@ -1081,6 +1100,72 @@ class Game {
     this.lan.applyRoleToWorld();
     this._pushLanHudState();
     return ok;
+  }
+
+  /**
+   * 公网直连：连到页面之外的服务器。
+   * 连上后把地址记进 settings.servers（最近使用），下次在大厅列表里直接点。
+   */
+  async _lanConnectTo(address) {
+    if (!this.lan) return false;
+    if (this.lan.inSession || this.lan.phase === LAN_PHASE.CONNECTING) {
+      if (this.hud) this.hud.toast('已经在房间里', '请先退出当前房间', 'info');
+      return false;
+    }
+    this._pushLanHudState();
+    if (this.hud) this.hud.toast('正在直连服务器…', address, 'info');
+    const name = this.settings.playerName || '玩家';
+    const ok = await this.lan.connectTo(address, 'guest', name);
+    if (ok) {
+      this._rememberServer(address);
+      if (this.hud) this.hud.toast('已直连服务器', `${this.lan.serverLabel || address} · 房间 ${this.lan.roomId}`, 'good');
+    } else if (this.hud) {
+      this.hud.toast('直连失败', this.lan.joinError || '无法连接', 'warn');
+    }
+    this.lan.applyRoleToWorld();
+    this._pushLanHudState();
+    return ok;
+  }
+
+  /** 刷新服务器列表的在线状态 */
+  async _lanRefreshServers() {
+    if (!this.lan) return false;
+    const list = this._knownServers();
+    if (this.hud) this.hud.toast('正在探测服务器…', `${list.length} 个地址`, 'info');
+    await this.lan.probeServers(list);
+    this._pushLanHudState();
+    const online = (this.lan.serverStatus || []).filter((s) => s.ok).length;
+    if (this.hud) this.hud.toast('服务器探测完成', `${online}/${list.length} 在线`, online ? 'good' : 'warn');
+    return true;
+  }
+
+  /**
+   * 服务器列表 = 本页面所在服务器 + 玩家保存过的地址。
+   * 本页面这一项总是排在最前，因为“加入房间/创建房间”走的就是它。
+   */
+  _knownServers() {
+    const out = [];
+    if (this.lan) {
+      const self = this.lan.selfServerAddress();
+      if (self) out.push(self);
+    }
+    const saved = Array.isArray(this.settings.servers) ? this.settings.servers : [];
+    for (const entry of saved) {
+      const addr = typeof entry === 'string' ? entry : (entry && entry.address);
+      if (addr && !out.includes(addr)) out.push(addr);
+    }
+    return out.slice(0, 12);
+  }
+
+  /** 记录最近直连过的服务器（最多 8 个，最近用的排最前） */
+  _rememberServer(address) {
+    const addr = String(address || '').trim();
+    if (!addr) return;
+    const saved = Array.isArray(this.settings.servers) ? this.settings.servers.slice() : [];
+    const rest = saved.filter((e) => (typeof e === 'string' ? e : e && e.address) !== addr);
+    rest.unshift(addr);
+    this.settings.servers = rest.slice(0, 8);
+    this.applySettings();
   }
 
   _onRunEnd(p) {
