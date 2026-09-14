@@ -11,7 +11,7 @@ const root = dirname(here);
 const logFile = join(root, 'launch.log');
 // 2.0 使用独立端口，绝不能复用 1.x 在 18080 上残留的单文件服务器。
 // 旧服务器返回同样的 <title>，此前仅按标题探测会让新版启动器打开旧游戏。
-let port = Number(process.env.IRONFALL_PORT || 18200);
+let port = Number(process.env.IRONFALL_PORT || 18240);
 let url = `http://127.0.0.1:${port}/?standalone=1`;
 
 function log(message) {
@@ -120,11 +120,11 @@ async function probeServer(candidatePort = port) {
   const rootPage = await getText(`${base}/?standalone=1`);
   if (!rootPage.reachable) return { reachable: false, ironfall: false, currentBuild: false };
   const ironfall = rootPage.status === 200 && rootPage.text.includes('<title>IRONFALL');
-  let currentBuild = ironfall && rootPage.text.includes('IRONFALL // BUILD 2.0.7');
+  let currentBuild = ironfall && rootPage.text.includes('IRONFALL // BUILD 2.0.10');
   // 开发目录的 index.html 不内联 HUD，因此再检查源码；发布包的单文件在上一步即可识别。
   if (ironfall && !currentBuild) {
     const hudSource = await getText(`${base}/src/ui/hud.js`);
-    currentBuild = hudSource.status === 200 && hudSource.text.includes('IRONFALL // BUILD 2.0.7');
+    currentBuild = hudSource.status === 200 && hudSource.text.includes('IRONFALL // BUILD 2.0.10');
   }
   return { reachable: true, ironfall, currentBuild };
 }

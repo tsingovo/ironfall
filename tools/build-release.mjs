@@ -159,6 +159,9 @@ async function main() {
   const files = [
     { name: '开始游戏.cmd', data: enc(launcher.toString('utf8')) },
     { name: 'IRONFALL.html', data: html },
+    { name: 'index.html', data: html },
+    { name: '开始联机.cmd', data: enc(await readFile(join(ROOT, '开始联机.cmd'), 'utf8')) },
+    { name: 'tools/lan-server.mjs', data: await readFile(join(ROOT, 'tools/lan-server.mjs')) },
     { name: '使用说明.txt', data: enc(README_TXT) },
     { name: 'LICENSE', data: license },
     { name: 'RELEASE_NOTES.md', data: releaseNotes },

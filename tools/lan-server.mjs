@@ -695,10 +695,27 @@ if (isMain()) {
     log: (m) => process.stdout.write(`[LAN] ${m}\n`),
   });
 
+  // Windows 上 IPv4/IPv6 监听可能并存；即使 listen 成功，也必须先移除旧单机监听。
+  if (process.platform === 'win32') {
+      // 重复启动时替换本项目旧服务（包括联机）；只匹配确切脚本路径，不按端口盲杀。
+      const { spawnSync } = await import('node:child_process');
+      const scripts = ['serve.mjs', 'serve-single.mjs', 'lan-server.mjs'].map((name) =>
+        "'" + join(ROOT, 'tools', name).replaceAll("'", "''") + "'").join(',');
+      const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+        `$paths = @(${scripts}); $ids = @(Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique); ` +
+        `foreach ($id in $ids) { $p = Get-CimInstance Win32_Process -Filter "ProcessId=$id"; ` +
+        `if ($p.Name -eq 'node.exe' -and $p.ProcessId -ne ${process.pid}) { foreach ($path in $paths) { ` +
+        `if ($p.CommandLine -match ('(?:"|\\s)' + [regex]::Escape($path) + '(?:"|\\s|$)')) { Stop-Process -Id $id -Force -ErrorAction Stop; break } } } }`],
+        { encoding: 'utf8', windowsHide: true, timeout: 10000 });
+      if (!result.error && result.status === 0) {
+        await new Promise((r) => setTimeout(r, 300));
+      }
+  }
   try {
     await server.listen();
   } catch (err) {
     process.stderr.write(`局域网服务器启动失败：${err && err.message}\n`);
+    if (err.code === 'EADDRINUSE') process.stderr.write(`端口 ${port} 已被其他服务占用。请关闭旧联机服务器，或设置 IRONFALL_PORT 为其他端口，并同步修改穿透目标端口。\n`);
     process.exit(1);
   }
 
