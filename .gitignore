@@ -22,6 +22,9 @@ desktop.ini
 dist/
 # 同上：发布 zip 与解压后的成品目录。二进制附件放 Git 历史里会让仓库迅速膨胀，
 # 而且 git 无法对 zip 做有效 diff/压缩。要发布就传到 Release 附件。
-# 例外：release/README.md 记录当前版本号与校验和，用 ! 规则保留入库。
-release/
+#
+# 注意必须写成 `release/*` 而不是 `release/`：一旦整个目录被排除，
+# git 会直接剪掉该目录、无法再用 `!` 把里面的文件捞回来（这是 git 的既定行为）。
+# 用 `release/*` 只排除目录内容，才能保留 release/README.md。
+release/*
 !release/README.md
