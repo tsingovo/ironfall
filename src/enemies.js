@@ -152,6 +152,57 @@ export class EnemySystem {
     this._time = 0;
     this._score = 0;
     this._onKill = opts.onKill || null;
+
+    // ---------------- 联机（局域网合作）----------------
+    // players：参与仇恨判定的玩家集合。单机时只有本机玩家，逻辑与改造前一致；
+    // 联机时由 net/session.js 写入 [本机玩家, ...远程玩家代理]，敌人会就近选目标。
+    this.players = player ? [player] : [];
+    // replicated：房客模式。敌人不再自行决策/移动，只接受房主快照驱动。
+    this.replicated = false;
+    // 房客侧待上报给房主的命中队列（扁平数组，零分配追加）。
+    this.hitReports = [];
+  }
+
+  /** 联机：设置参与仇恨的玩家集合（本机玩家 + 远程玩家代理） */
+  setPlayers(list) {
+    this.players = Array.isArray(list) ? list.filter(Boolean) : [];
+    if (this.players.length === 0 && this.player) this.players = [this.player];
+  }
+
+  /** 联机：切换为“由房主快照驱动”的复制模式 */
+  setReplicated(flag) {
+    this.replicated = !!flag;
+    if (this.replicated) this.hitReports.length = 0;
+  }
+
+  /**
+   * 联机：多玩家时的目标选择。
+   * 就近选人，但对当前目标保留迟滞，避免两名队友距离接近时敌人每个物理步
+   * 都来回换目标（表现为原地抽搐、谁也不打）。
+   */
+  _selectTarget(e) {
+    const list = this.players;
+    let best = null;
+    let bestD = Infinity;
+    for (let i = 0; i < list.length; i++) {
+      const pl = list[i];
+      if (!pl || pl.alive === false) continue;
+      const dx = pl.pos[0] - e.pos[0];
+      const dy = pl.pos[1] - e.pos[1];
+      const dz = pl.pos[2] - e.pos[2];
+      const d = dx * dx + dy * dy + dz * dz;
+      if (d < bestD) { bestD = d; best = pl; }
+    }
+    const cur = e.target;
+    if (best && cur && cur.alive !== false && list.indexOf(cur) >= 0) {
+      const dx = cur.pos[0] - e.pos[0];
+      const dy = cur.pos[1] - e.pos[1];
+      const dz = cur.pos[2] - e.pos[2];
+      // 1.44 = 1.2²，即新目标要近 20% 以上才换人
+      if (dx * dx + dy * dy + dz * dz <= bestD * 1.44) best = cur;
+    }
+    e.target = best;
+    return best;
   }
 
   count() { return this.all.length; }
@@ -187,7 +238,8 @@ export class EnemySystem {
     const maxShield = Math.round(CFG.gameplay.maxShield);
 
     const e = this._free.pop() || {};
-    e.id = _nextId++;
+    // 联机时房客必须沿用房主分配的 id，才能让命中申报与快照对上同一只敌人。
+    e.id = Number.isFinite(o.id) ? (o.id | 0) : _nextId++;
     e.typeId = typeId;
     e.type = type;
     e.pos = e.pos || new Float32Array(3);
@@ -265,6 +317,8 @@ export class EnemySystem {
   update(dt, player) {
     this._time += dt;
     const p = player || this.player;
+    // 联机多人时每只敌人就近选目标；单机时多一次数组长度判断，行为不变。
+    const multi = this.players.length > 1;
     for (let i = 0; i < this.all.length; i++) {
       const e = this.all[i];
       if (!e.alive) {
@@ -274,9 +328,13 @@ export class EnemySystem {
       e.age += dt;
       if (e.hitFlash > 0) e.hitFlash -= dt * 4;
       if (e.gunRecoil > 0) e.gunRecoil -= dt * 6;
+      // 房客：位置/朝向/血量完全由房主快照驱动（net/session.js 每帧插值写入），
+      // 这里只推进表现层计时，绝不跑 AI、物理或抓钩牵引。
+      if (this.replicated) continue;
       this._updateStatus(e, dt);
-      this._updateAI(e, dt, p);
-      const grappleMaxSpeed = this._applyGrapplePull(e, dt, p);
+      const target = multi ? this._selectTarget(e) : p;
+      this._updateAI(e, dt, target);
+      const grappleMaxSpeed = this._applyGrapplePull(e, dt, target);
       this._physics(e, dt, grappleMaxSpeed);
       if (e.grapplePull) e.grapplePull.pending = false;
     }
@@ -970,8 +1028,26 @@ export class EnemySystem {
     if (!o.countAsDealt) res.countAsDealt = true;
 
     if (e.hp <= 0) {
-      res.killed = true;
-      this._kill(e, headshot, o);
+      if (this.replicated) {
+        // 房客不做权威击杀：这里只把预测血量夹到 0，等房主快照回传 alive=false
+        // 后再播死亡表现。否则房客会自行刷掉落、重复计分。
+        e.hp = 0;
+      } else {
+        res.killed = true;
+        this._kill(e, headshot, o);
+      }
+    }
+
+    // 房客把命中申报给房主做权威结算。上报的是**本次命中的原始伤害**，而不是
+    // 本地预测结算后的数值：房主的敌人血量/护盾才是事实来源，用原始值重算才能
+    // 让两端的护盾-生命分配保持一致。
+    if (this.replicated) {
+      const p = hitPoint || e.pos;
+      const n = hitNormal || UP_V;
+      this.hitReports.push(
+        e.id, amount, headshot ? 1 : 0,
+        p[0], p[1], p[2], n[0], n[1], n[2],
+      );
     }
     return res;
   }
@@ -986,11 +1062,72 @@ export class EnemySystem {
 
     // 死亡不再生成大团烟雾/粒子；它会遮挡准星与后方目标，连续击杀时尤其严重。
     // 击杀确认由音效、命中标记和击杀播报负责。
-    Events.emit('enemy:die', { enemy: e, pos: e.pos, byPlayer: true, headshot });
+    Events.emit('enemy:die', { enemy: e, pos: e.pos, byPlayer: true, headshot, source: opts && opts.source });
     Events.emit('audio:play', { name: 'enemy_die', pos: e.pos, gain: 0.7 });
     Events.emit('fx:shake', { amount: e.type.elite ? 0.25 : 0.08, time: 0.14 });
     if (this._onKill) this._onKill(e, headshot, opts);
     void opts;
+  }
+
+  // ---------------------------------------------------------------- 联机同步
+
+  /** 按网络 id 查敌人（房客侧用；数量级 10²，线性查找足够） */
+  findByNetId(id) {
+    for (let i = 0; i < this.all.length; i++) {
+      if (this.all[i].id === id) return this.all[i];
+    }
+    return null;
+  }
+
+  /**
+   * 联机：取出房客侧待上报的命中队列。
+   * 扁平数组，每 9 个数为一组：id, 伤害, 爆头, 命中点xyz, 法线xyz。
+   */
+  takeHitReports(out) {
+    const src = this.hitReports;
+    if (src.length === 0) return out || [];
+    const dst = out || [];
+    for (let i = 0; i + 8 < src.length; i += 9) {
+      dst.push([src[i], src[i + 1], src[i + 2], src[i + 3], src[i + 4], src[i + 5], src[i + 6], src[i + 7], src[i + 8]]);
+    }
+    src.length = 0;
+    return dst;
+  }
+
+  /**
+   * 联机：把房主快照里的权威血量写入本地敌人（房客侧）。
+   * 位置与朝向由调用方按固定频率插值逼近；这里只负责“状态量”，因为它们必须
+   * 立刻生效（血条、命中反馈、死亡判定都依赖它）。
+   */
+  applyNetState(e, hp, shield, alive, aiState) {
+    if (!e) return;
+    if (Number.isFinite(hp)) e.hp = hp;
+    if (Number.isFinite(shield)) e.shield = shield;
+    if (Number.isFinite(aiState)) e.state = aiState;
+    if (alive === false && e.alive) this.presentRemoteDeath(e);
+    else if (alive === true && !e.alive) { e.alive = true; e.deadTime = 0; }
+  }
+
+  /**
+   * 联机：房主判定死亡后，房客在本机补播同一套死亡表现。
+   * 只做表现（音效/闪光/死亡方向），不触发掉落与计分——那些是房主的职责。
+   */
+  presentRemoteDeath(e) {
+    e.alive = false;
+    e.deadTime = 0;
+    e.hp = 0;
+    e.hitFlash = 1;
+    Events.emit('audio:play', { name: 'enemy_die', pos: e.pos, gain: 0.7 });
+    Events.emit('fx:shake', { amount: e.type && e.type.elite ? 0.25 : 0.08, time: 0.14 });
+  }
+
+  /** 联机：彻底移除一只敌人（房主快照里已消失） */
+  removeByNetId(id) {
+    const e = this.findByNetId(id);
+    if (!e) return false;
+    e.alive = false;
+    e.deadTime = 99;
+    return true;
   }
 
   /** 爆炸伤害（范围衰减 + 视线检查） */

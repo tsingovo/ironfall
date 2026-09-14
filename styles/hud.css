@@ -2047,3 +2047,114 @@
     animation: none;
   }
 }
+
+/* ── 局域网联机大厅 ──────────────────────────────────────────────────────────
+   布局全部走 class 选择器，不新增任何 #id 基线规则，因此不会和状态类产生
+   特异性冲突（hud-fixes.css 只需处理 #id 与 .class 的既有冲突）。
+   队友行与聊天行都是固定池：JS 只改文本与 transform，不新建节点。 */
+.menu-lan-body {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-height: 50vh;
+  overflow-y: auto;
+  padding-right: 6px;
+}
+.menu-lan-status {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--hud-cold-soft);
+  letter-spacing: 0.04em;
+  padding: 2px 0 4px;
+}
+.menu-lan-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.menu-lan-label {
+  flex: 0 0 68px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--hud-text-dim);
+}
+.menu-lan-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--hud-text);
+  background: var(--hud-panel-solid);
+  border: 1px solid var(--hud-line);
+  border-radius: 2px;
+  outline: none;
+}
+.menu-lan-input:focus {
+  border-color: var(--hud-cold);
+}
+.menu-lan-peers {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.menu-lan-peer {
+  display: grid;
+  grid-template-columns: 1fr auto 84px;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border: 1px solid var(--hud-line-soft);
+  background: var(--hud-panel);
+}
+.menu-lan-peer-name {
+  font-size: 12px;
+  color: var(--hud-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.menu-lan-peer-role {
+  font-size: 11px;
+  color: var(--hud-text-dim);
+  white-space: nowrap;
+}
+.menu-lan-peer-bar {
+  display: block;
+  height: 4px;
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid var(--hud-line-soft);
+  overflow: hidden;
+}
+.menu-lan-peer-fill {
+  display: block;
+  height: 100%;
+  background: var(--hud-good);
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 0.18s linear;
+}
+.menu-lan-peer--dead .menu-lan-peer-fill {
+  background: var(--hud-warn);
+}
+.menu-lan-peer--off {
+  opacity: 0.4;
+}
+.menu-lan-chat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 90px;
+  padding: 4px 6px;
+  border: 1px solid var(--hud-line-soft);
+  background: rgba(0, 0, 0, 0.28);
+}
+.menu-lan-chat-line {
+  font-size: 12px;
+  line-height: 1.35;
+  min-height: 16px;
+  color: var(--hud-text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

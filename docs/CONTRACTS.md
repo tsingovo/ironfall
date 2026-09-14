@@ -933,7 +933,47 @@ window.__IRONFALL__ = { game, CFG, Engine, World, ... }   // 自动化测试钩�
 
 ---
 
-## 21. 文件清单与负责人
+## 21. `net/*` — 局域网联机（新增）
+
+依赖方向：`net/*` 与 `ui/*`、`fx/*` 同级，**只能 import `core/*`**，不得反向
+import `weapons.js` / `enemies.js` 等上层模块。需要上层数据时由 `Game` 注入
+（例如 `Game.enemyTypeIds` 提供兵种槽表）。
+
+| 文件 | 职责 | 关键导出 |
+|---|---|---|
+| `src/net/transport.js` | WebSocket 传输：握手、心跳、延迟测量、自动重连 | `NetTransport`, `NET_STATUS`, `defaultWsUrl` |
+| `src/net/protocol.js` | 消息种类、位标志、紧凑编解码 | `MSG`, `SRV`, `EV`, `FLAG`, `EFLAG`, `MOVE_STATES`, `PLAYER_TUPLE`, `ENEMY_TUPLE`, `createCodec`, `sanitizeChat` |
+| `src/net/session.js` | 会话：大厅名册、玩家复制、敌人同步、命中/伤害转发 | `LanSession`, `RemotePlayer`, `LAN_ROLE`, `LAN_PHASE` |
+| `src/net/avatar.js` | 队友第三人称模型（整身 21 部件，单次合批） | `AvatarRenderer` |
+
+约束：
+
+- 模块顶层不得访问 `WebSocket` / `location` / `document` —— `tools/test-modules.mjs`
+  会在 Node 里逐个 import 全部 `src/**/*.js`，顶层副作用会让契约检查直接失败。
+- 单个 WebSocket 文本帧上限 4 MiB；超过即断连（`lan-server.mjs` 的 `MAX_FRAME`）。
+
+### `EnemySystem` 为联机新增的接口
+
+```js
+setPlayers(list)                  // 参与仇恨判定的玩家集合（本机玩家 + 远程代理）
+setReplicated(flag)               // 房客模式：只受快照驱动，不跑 AI/物理
+findByNetId(id)                   // 按网络 id 查敌人
+takeHitReports(out)               // 取出房客侧待上报命中（扁平数组，每 9 个一组）
+applyNetState(e, hp, shield, alive, aiState)
+presentRemoteDeath(e)             // 房客侧补播死亡表现（不掉落、不计分）
+removeByNetId(id)                 // 退役快照里已消失的敌人
+```
+
+`spawn(typeId, pos, { id })` 支持指定网络 id；不传时维持原来的自增行为。
+`damage()` 在 `replicated` 模式下不产生权威击杀，只把预测血量夹到 0 并压入上报队列。
+
+`_kill` 发出的 `enemy:die` 事件新增 `source` 字段：联机时是击杀者的 peer id 字符串，
+单机时为 `undefined`。`Game._onEnemyKill(enemy, headshot, opts)` 依赖它把奖励与掉落
+留给击杀者本人结算。
+
+---
+
+## 22. 文件清单与负责人
 
 | 路径 | 内容 |
 |---|---|
@@ -962,6 +1002,12 @@ window.__IRONFALL__ = { game, CFG, Engine, World, ... }   // 自动化测试钩�
 | `src/ui/hud.js` | HUD |
 | `src/save.js` | 存档与元进度 |
 | `src/main.js` | 主循环 |
+| `src/net/transport.js` | 联机：WebSocket 传输 |
+| `src/net/protocol.js` | 联机：协议与编解码 |
+| `src/net/session.js` | 联机：会话与状态同步 |
+| `src/net/avatar.js` | 联机：队友第三人称模型 |
 | `tools/serve.mjs` | 静态服务器 |
+| `tools/lan-server.mjs` | 局域网服务器（静态站点 + WebSocket 房间中继） |
+| `tools/test-lan.mjs` | 双客户端联机端到端验证 |
 | `tools/headless-check.mjs` | 无头验证 |
 | `public/models/manifest.json` | 模型导入清单 |

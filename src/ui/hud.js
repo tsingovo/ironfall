@@ -66,8 +66,9 @@ const MENU_SPEC = {
       { key: '5', label: '远征简报', sub: 'MISSION BRIEFING', intent: 'open_briefing' },
       { key: '6', label: '设置', sub: 'SETTINGS', intent: 'open_settings' },
       { key: '7', label: '操作说明', sub: 'CONTROLS', intent: 'open_help' },
-      { key: '8', label: '制作名单', sub: 'CREDITS', intent: 'open_credits' },
-      { key: '9', label: '退出游戏', sub: 'EXIT TO DESKTOP', intent: 'quit_game', danger: true },
+      { key: '8', label: '局域网联机', sub: 'LAN CO-OP · UP TO 4', intent: 'open_lan' },
+      { key: '9', label: '制作名单', sub: 'CREDITS', intent: 'open_credits' },
+      { key: '0', label: '退出游戏', sub: 'EXIT TO DESKTOP', intent: 'quit_game', danger: true },
     ],
   },
   campaign: {
@@ -171,6 +172,21 @@ const MENU_SPEC = {
     credits: true,
     items: [{ key: '1', label: '返回', sub: 'BACK', intent: 'open_main', primary: true }],
   },
+  // 局域网联机大厅：正文（状态/队友/聊天）由 setLanState() 注入
+  lan: {
+    tag: 'LAN CO-OP // 局域网联机',
+    title: '局域网联机',
+    sub: 'HOST OR JOIN OVER LAN',
+    note: '同一个路由器下最多 4 人合作。房主点“创建房间”，其他人用浏览器打开房主给出的地址后点“加入房间”。',
+    lan: true,
+    items: [
+      { key: '1', label: '创建房间', sub: 'HOST · 成为权威主机', intent: 'lan_host', primary: true },
+      { key: '2', label: '加入房间', sub: 'JOIN · 已有人开局时选它', intent: 'lan_join' },
+      { key: '3', label: '开始远征', sub: 'DEPLOY · 仅房主可用', intent: 'lan_start' },
+      { key: '4', label: '退出房间', sub: 'LEAVE ROOM', intent: 'lan_leave', danger: true },
+      { key: '5', label: '返回', sub: 'BACK', intent: 'open_main' },
+    ],
+  },
 };
 
 // 设置项描述：滑条 / 开关 / 下拉，改动后立刻通过 onIntent 回传。
@@ -218,6 +234,10 @@ const STAT_ROWS = [
   ['tier', '远征深度'],
   ['alloy', '合金'],
 ];
+
+// 局域网大厅的固定池规模：队友行与聊天行都在构造时建好，运行期只改文本。
+const LAN_PEER_ROWS = 4;
+const LAN_CHAT_ROWS = 6;
 
 // ── 小工具（全部纯函数，hot path 无分配） ───────────────────────────────────
 function num(v, fb = 0) {
@@ -350,6 +370,7 @@ export class HUD {
     this._seedSettings();
 
     this._statOverride = null;
+    this._lanState = null;
 
     // 文档对象：优先用 root 所属文档，保证多文档/无头环境下也对。
     const doc = (this.root && this.root.ownerDocument) ||
@@ -930,6 +951,73 @@ export class HUD {
           this._append(body, row);
         }
         this._append(inner, body);
+      }
+
+      // 局域网联机大厅：状态行 + 昵称 + 队友列表 + 聊天记录（全部固定池，
+      // 逐帧只改文本，绝不在 update/render 里创建 DOM 节点）
+      if (spec.lan) {
+        const body = mk('div', 'menu-' + kind + '-body', 'menu-lan-body');
+
+        const status = mk('div', 'menu-' + kind + '-status', 'menu-lan-status');
+        const nameRow = mk('div', 'menu-' + kind + '-name-row', 'menu-lan-field');
+        const nameLabel = mk('span', 'menu-' + kind + '-name-label', 'menu-lan-label');
+        if (nameLabel) nameLabel.textContent = '昵称';
+        const nameInput = mk('input', 'menu-' + kind + '-name', 'menu-lan-input');
+        if (nameInput) {
+          if (nameInput.setAttribute) nameInput.setAttribute('type', 'text');
+          nameInput.value = '玩家';
+        }
+        this._append(nameRow, nameLabel, nameInput);
+
+        const peers = mk('div', 'menu-' + kind + '-peers', 'menu-lan-peers');
+        for (let i = 0; i < LAN_PEER_ROWS; i++) {
+          const row = mk('div', 'menu-' + kind + '-peer-' + i, 'menu-lan-peer');
+          const who = mk('span', 'menu-' + kind + '-peer-' + i + '-name', 'menu-lan-peer-name');
+          const role = mk('span', 'menu-' + kind + '-peer-' + i + '-role', 'menu-lan-peer-role');
+          const bar = mk('span', 'menu-' + kind + '-peer-' + i + '-bar', 'menu-lan-peer-bar');
+          const barFill = mk('i', 'menu-' + kind + '-peer-' + i + '-fill', 'menu-lan-peer-fill');
+          this._append(bar, barFill);
+          this._append(row, who, role, bar);
+          this._append(peers, row);
+          el['lan-peer-' + i] = row;
+          el['lan-peer-name-' + i] = who;
+          el['lan-peer-role-' + i] = role;
+          el['lan-peer-fill-' + i] = barFill;
+        }
+
+        const chat = mk('div', 'menu-' + kind + '-chat', 'menu-lan-chat');
+        for (let i = 0; i < LAN_CHAT_ROWS; i++) {
+          const line = mk('div', 'menu-' + kind + '-chat-' + i, 'menu-lan-chat-line');
+          this._append(chat, line);
+          el['lan-chat-' + i] = line;
+        }
+        const chatRow = mk('div', 'menu-' + kind + '-chat-row', 'menu-lan-field');
+        const chatLabel = mk('span', 'menu-' + kind + '-chat-label', 'menu-lan-label');
+        if (chatLabel) chatLabel.textContent = '队伍频道';
+        const chatInput = mk('input', 'menu-' + kind + '-chat-input', 'menu-lan-input');
+        if (chatInput) {
+          if (chatInput.setAttribute) chatInput.setAttribute('type', 'text');
+          chatInput.value = '';
+        }
+        this._append(chatRow, chatLabel, chatInput);
+
+        this._append(body, status, nameRow, peers, chat, chatRow);
+        this._append(inner, body);
+        el['lan-status'] = status;
+        el['lan-name-input'] = nameInput;
+        el['lan-chat-input'] = chatInput;
+
+        this._bind(nameInput, 'change', () => {
+          this._intent('lan_set_name', { value: String(nameInput.value || '') });
+        });
+        this._bind(chatInput, 'keydown', (e) => {
+          const code = (e && (e.code || e.key)) || '';
+          if (code !== 'Enter' && code !== 'NumpadEnter') return;
+          const text = String(chatInput.value || '');
+          chatInput.value = '';
+          this._intent('lan_chat', { value: text });
+          if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
+        });
       }
 
       // 菜单项
@@ -2086,6 +2174,14 @@ export class HUD {
   setRunStats(stats) { this._statOverride = stats && typeof stats === 'object' ? stats : null; }
 
   /**
+   * 注入局域网大厅状态（由 Game 每秒推送若干次）。
+   * 结构：{ role, phase, status, selfName, isHost, latency, error, url, peers[], chat[] }
+   */
+  setLanState(state) {
+    this._lanState = state && typeof state === 'object' ? state : null;
+  }
+
+  /**
    * 注入"远征简报"内容：世界观背景 + 本局任务。
    * 数据由 game 提供（任务阶梯里的 title/brief + 生物群系描述）。
    * 结构：{ world, mission, meta:[{k,v}], tier, mapName, biome }
@@ -2222,6 +2318,73 @@ export class HUD {
     }
   }
 
+  /**
+   * 绘制局域网大厅正文。所有节点都是构造期建好的固定池，这里只改文本/样式，
+   * 因此不会产生新 DOM 节点（HUD 压力测试对此有硬性断言）。
+   */
+  _paintLanPanel() {
+    const st = this._lanState;
+    const status = this.el['lan-status'];
+    if (!st) {
+      this._text(status, '未连接 · 点“创建房间”开主机，或“加入房间”连到房主的地址');
+      for (let i = 0; i < LAN_PEER_ROWS; i++) {
+        this._text(this.el['lan-peer-name-' + i], i === 0 ? '（本机）' : '—');
+        this._text(this.el['lan-peer-role-' + i], i === 0 ? '待机' : '空位');
+        this._style(this.el['lan-peer-fill-' + i], 'transform', 'scaleX(0)');
+        this._cls(this.el['lan-peer-' + i], 'menu-lan-peer--off', i !== 0);
+      }
+      for (let i = 0; i < LAN_CHAT_ROWS; i++) this._text(this.el['lan-chat-' + i], '');
+      return;
+    }
+
+    const phaseText = {
+      connecting: '正在连接…',
+      lobby: '已进入房间，等待房主开始远征',
+      playing: '远征进行中',
+      failed: '连接失败',
+      off: '未连接',
+    }[st.phase] || st.phase;
+
+    this._text(status, `${phaseText} · ${st.error ? st.error : '正常'} · 延迟 ${st.latency} ms · 房间 ${st.room}`);
+    if (this.el['lan-name-input'] && this.doc && this.doc.activeElement !== this.el['lan-name-input']) {
+      const want = st.selfName || '';
+      if (this.el['lan-name-input'].value !== want) this.el['lan-name-input'].value = want;
+    }
+
+    const peers = Array.isArray(st.peers) ? st.peers : [];
+    for (let i = 0; i < LAN_PEER_ROWS; i++) {
+      const p = peers[i];
+      const row = this.el['lan-peer-' + i];
+      this._cls(row, 'menu-lan-peer--off', !p);
+      if (!p) {
+        this._text(this.el['lan-peer-name-' + i], '空位');
+        this._text(this.el['lan-peer-role-' + i], '等待加入');
+        this._style(this.el['lan-peer-fill-' + i], 'transform', 'scaleX(0)');
+        continue;
+      }
+      this._text(this.el['lan-peer-name-' + i],
+        `${p.self ? '★ ' : ''}${p.name || '玩家'}${p.stale ? '（离线）' : ''}`);
+      const hp = Math.max(0, num(p.health, 0));
+      const sh = Math.max(0, num(p.shield, 0));
+      const maxHp = Math.max(1, num(p.maxHealth, 100));
+      const maxSh = Math.max(1, num(p.maxShield, 1));
+      const frac = clamp01((hp + sh) / (maxHp + maxSh));
+      const role = p.isHost ? '房主' : '队员';
+      this._text(this.el['lan-peer-role-' + i],
+        `${role} · ${Math.round(hp)}/${Math.round(sh)}${p.alive === false ? ' · 阵亡' : ''}`);
+      this._style(this.el['lan-peer-fill-' + i], 'transform', `scaleX(${frac.toFixed(3)})`);
+      this._cls(this.el['lan-peer-' + i], 'menu-lan-peer--dead', p.alive === false);
+    }
+
+    const chat = Array.isArray(st.chat) ? st.chat : [];
+    const start = Math.max(0, chat.length - LAN_CHAT_ROWS);
+    for (let i = 0; i < LAN_CHAT_ROWS; i++) {
+      const entry = chat[start + i];
+      this._text(this.el['lan-chat-' + i],
+        entry ? `${entry.self ? '我' : (entry.name || '队友')}：${entry.text}` : '');
+    }
+  }
+
   _paintMenu(kind) {
     const spec = MENU_SPEC[kind];
     if (!spec) return;
@@ -2251,6 +2414,7 @@ export class HUD {
         this._text(this.el['set-value-' + cfgItem.id], this._fmtSetting(cfgItem, v));
       }
     }
+    if (spec.lan) this._paintLanPanel();
     if (spec.campaign) {
       const meta = this.ctx && this.ctx.meta;
       const missions = (this.ctx && this.ctx.missions) || [];
@@ -2426,6 +2590,10 @@ export class HUD {
     }
     if (!this._menu) return;
 
+    // 文本输入框（局域网大厅的昵称/聊天）必须独占键盘：否则在聊天框里打字会被
+    // 菜单导航当成 ↑↓/Enter/数字键直接消费，一个字都打不进去。
+    if (this._isTextField(e.target)) return;
+
     if (code === 'Escape') {
       // Escape 由 Game 的单一状态机处理。这里若同时发 close_menu，会出现同一个
       // keydown 先关闭、下一帧又被 Game 重新打开的竞态。
@@ -2464,13 +2632,28 @@ export class HUD {
       prevent();
       return;
     }
-    // 数字键直接触发对应菜单项
-    if (/^Digit[1-9]$/.test(code) && this._menu) {
-      const idx = num(code.charAt(code.length - 1), 1) - 1;
+    // 数字键直接触发对应菜单项（1–9 → 第 1–9 项，0 → 第 10 项）
+    if (/^Digit[0-9]$/.test(code) && this._menu) {
+      const digit = code.charAt(code.length - 1);
+      const idx = digit === '0' ? 9 : num(digit, 1) - 1;
       const items = this._menuItems[this._menu] || [];
       if (items[idx]) this._activate({ type: 'item', item: items[idx].spec });
       prevent();
     }
+  }
+
+  /**
+   * 判断事件目标是不是文本输入控件。
+   * 无头 DOM mock 只实现了 #id / .class / 裸标签三种选择器，因此这里按 tagName
+   * 与 type 判断，不依赖 `input[type=text]` 这类复合选择器。
+   */
+  _isTextField(target) {
+    if (!target) return false;
+    const tag = String(target.tagName || '').toLowerCase();
+    if (tag === 'textarea') return true;
+    if (tag !== 'input') return false;
+    const type = String(target.type || 'text').toLowerCase();
+    return type === 'text' || type === 'search' || type === 'url' || type === 'password';
   }
 
   // ── 加载遮罩 ────────────────────────────────────────────────────────────
