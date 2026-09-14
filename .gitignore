@@ -20,3 +20,8 @@ desktop.ini
 
 # 打包产物（由 build-standalone / build-release 生成，作为 Release 附件上传，不入库）
 dist/
+# 同上：发布 zip 与解压后的成品目录。二进制附件放 Git 历史里会让仓库迅速膨胀，
+# 而且 git 无法对 zip 做有效 diff/压缩。要发布就传到 Release 附件。
+# 例外：release/README.md 记录当前版本号与校验和，用 ! 规则保留入库。
+release/
+!release/README.md
