@@ -7,6 +7,123 @@
 export const NET_VERSION = '1';
 export const PROTOCOL_VERSION = 1;
 
+/** 服务器的默认端口（与 tools/lan-server.mjs 的 DEFAULT_PORT 保持一致） */
+export const DEFAULT_SERVER_PORT = 18200;
+
+/**
+ * 解析玩家手输的服务器地址。
+ *
+ * 支持这些写法（端口省略时用 18200）：
+ *   1.2.3.4              192.168.1.5:18200        game.example.com
+ *   ws://1.2.3.4:18200   wss://example.com        https://example.com/ironfall
+ *   1.2.3.4:18200#raiders        ← # 后面是房间名
+ *   [fe80::1]:18200              ← IPv6 字面量
+ *
+ * 路径被当作 HTTP 基准路径：`https://x.com/ironfall` → ws 走
+ * `wss://x.com/ironfall/ws`、状态查询走 `https://x.com/ironfall/lan/status`。
+ * 这样反代挂在子路径下也能用（前提是反代把前缀剥掉再转发给 lan-server）。
+ *
+ * @param {string} input 玩家输入的原文
+ * @param {{secure?:boolean}} opts secure = 当前页面是否 HTTPS（决定默认协议）
+ */
+export function parseServerAddress(input, opts = {}) {
+  const pageIsSecure = !!opts.secure;
+  let raw = String(input == null ? '' : input).trim();
+  if (!raw) return { ok: false, error: '请输入服务器地址' };
+
+  let room = '';
+  const hash = raw.indexOf('#');
+  if (hash >= 0) {
+    room = raw.slice(hash + 1).trim().replace(/[^\w\u4e00-\u9fa5-]/g, '').slice(0, 32);
+    raw = raw.slice(0, hash).trim();
+  }
+
+  let explicitProto = '';
+  const protoMatch = /^(wss?|https?):\/\//i.exec(raw);
+  if (protoMatch) {
+    explicitProto = protoMatch[1].toLowerCase();
+    raw = raw.slice(protoMatch[0].length);
+  }
+
+  // 路径部分：留作 HTTP 基准，WS 端点在其后追加 /ws
+  let basePath = '';
+  const slash = raw.indexOf('/');
+  if (slash >= 0) {
+    basePath = raw.slice(slash).replace(/\/+$/, '');
+    if (basePath === '/ws') basePath = '';
+    else basePath = basePath.replace(/\/ws$/, '');
+    raw = raw.slice(0, slash);
+  }
+
+  let host = raw;
+  let portStr = '';
+  if (host.startsWith('[')) {
+    const end = host.indexOf(']');
+    if (end < 0) return { ok: false, error: 'IPv6 地址缺少 “]”' };
+    const rest = host.slice(end + 1);
+    host = host.slice(1, end);
+    if (rest.startsWith(':')) portStr = rest.slice(1);
+  } else {
+    const first = host.indexOf(':');
+    const last = host.lastIndexOf(':');
+    // 只有一个冒号才是 host:port；多个冒号视为不带方括号的 IPv6 字面量
+    if (first > 0 && first === last) {
+      portStr = host.slice(last + 1).trim();
+      if (portStr === '') return { ok: false, error: '冒号后没有端口号' };
+      host = host.slice(0, last);
+    }
+  }
+  host = host.trim();
+  if (!host || host.startsWith(':') || host.endsWith(':')) {
+    return { ok: false, error: '地址缺少主机名' };
+  }
+  const isV6 = host.includes(':');
+  const hostOk = isV6 ? /^[0-9A-Fa-f:.]+$/.test(host) : /^[A-Za-z0-9._-]+$/.test(host);
+  if (!hostOk) return { ok: false, error: `主机名不合法：${host}` };
+
+  // 端口只在“确实写了”的时候校验。写成 `port = Number(x) || DEFAULT` 会让
+  // 显式的 `:0` 静默变成默认端口，玩家输错了却连到别的地方去。
+  let port = DEFAULT_SERVER_PORT;
+  if (portStr !== '') {
+    port = Number(portStr);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      return { ok: false, error: `端口不合法：${portStr}` };
+    }
+  }
+
+  const secure = explicitProto
+    ? (explicitProto === 'wss' || explicitProto === 'https')
+    : pageIsSecure;
+  // 混合内容：HTTPS 页面里浏览器会直接掐断明文 ws://。
+  // 显式写了 ws:// 是明确的错误，直接拒绝；只是没写协议的（默认按 wss 试）
+  // 无法在这里判定，标一个风险位，连接失败时再补提示。
+  if (pageIsSecure && explicitProto && !secure) {
+    return {
+      ok: false,
+      error: '当前页面是 HTTPS，浏览器不允许连接明文 ws:// 服务器。请改用 wss:// 或 https:// 访问本页面。',
+      mixedContent: true,
+    };
+  }
+
+  const hostPort = host.includes(':') ? `[${host}]:${port}` : `${host}:${port}`;
+  const scheme = secure ? 'wss:' : 'ws:';
+  const httpScheme = secure ? 'https:' : 'http:';
+  return {
+    ok: true,
+    host,
+    port,
+    room,
+    secure,
+    basePath,
+    // HTTPS 页面 + 没写协议：默认按 wss 试（服务器可能真有 TLS），
+    // 但如果连不上，八成就是对方只有明文。让调用方能在失败时补这句提示。
+    mixedContentRisk: pageIsSecure && !explicitProto,
+    wsUrl: `${scheme}//${hostPort}${basePath}/ws`,
+    httpUrl: `${httpScheme}//${hostPort}${basePath}`,
+    label: `${host}:${port}${basePath}${room ? '#' + room : ''}`,
+  };
+}
+
 /** 服务器 → 客户端的信封类型（由 tools/lan-server.mjs 产生） */
 export const SRV = Object.freeze({
   WELCOME: 'welcome',
@@ -243,6 +360,8 @@ export function validateGameMessage(msg) {
 export default {
   NET_VERSION,
   PROTOCOL_VERSION,
+  DEFAULT_SERVER_PORT,
+  parseServerAddress,
   SRV,
   MSG,
   FLAG,

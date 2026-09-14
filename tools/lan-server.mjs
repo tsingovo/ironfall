@@ -406,12 +406,29 @@ export function createLanServer(opts = {}) {
       peer.ws.close(4000, 'room full');
       return;
     }
+
+    // 协议版本闸门。局域网里大家用的是同一份代码，公网直连却不是：一个旧客户端
+    // 连上来后能握手成功，但字段对不上，表现是“连上了但什么都不同步”，极难排查。
+    // 这里直接按房间内第一个人定版，不一致就明确拒绝。
+    const version = String(msg.version || '');
+    const existing = [...room.peers.values()].find((p) => p.version);
+    if (existing && version && existing.version !== version) {
+      peer.ws.sendJson({
+        t: 'error',
+        code: 'version_mismatch',
+        message: `协议版本不一致：服务器上是 v${existing.version}，你是 v${version}。请把游戏更新到同一版本。`,
+      });
+      peer.ws.close(4002, 'protocol version mismatch');
+      if (opts.log) opts.log(`拒绝 ${msg.name || '未知玩家'}：协议 v${version} ≠ 房间 v${existing.version}`);
+      return;
+    }
+
     const sameName = [...room.peers.values()].some((p) => p.name === sanitizeName(msg.name, ''));
     peer.id = peerId();
     peer.name = sanitizeName(msg.name, `玩家${nextPlayerNumber}`);
     if (sameName) peer.name = peer.name.slice(0, MAX_NAME_LEN - 2) + '·2';
     nextPlayerNumber++;
-    peer.version = String(msg.version || '');
+    peer.version = version;
     peer.joined = true;
     peer.joinedAt = Date.now();
     room.add(peer);

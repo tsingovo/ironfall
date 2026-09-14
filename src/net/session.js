@@ -18,7 +18,7 @@ import * as Events from '../core/events.js';
 import { NetTransport, NET_STATUS, defaultWsUrl } from './transport.js';
 import {
   MSG, SRV, EV, FLAG, EFLAG, createCodec, PLAYER_TUPLE, ENEMY_TUPLE,
-  sanitizeChat, q2, q4, q1,
+  sanitizeChat, q2, q4, q1, parseServerAddress, PROTOCOL_VERSION,
 } from './protocol.js';
 import { AvatarRenderer } from './avatar.js';
 
@@ -179,6 +179,10 @@ export class LanSession {
     this.selfName = '玩家';
     this.roomId = 'default';
     this.hostId = null;
+    /** 直连时玩家输入的原始地址；同页面联机时为空 */
+    this.directAddress = '';
+    /** 服务器列表探测结果（由 probeServers 写入） */
+    this.serverStatus = [];
     this.roster = [];                 // 服务器名册（含准备状态）
     /** @type {Map<string, RemotePlayer>} */
     this.remotes = new Map();
@@ -238,6 +242,9 @@ export class LanSession {
       latency: this.latency,
       error: this.joinError || this._t.lastError,
       url: this._t.url,
+      directAddress: this.directAddress,
+      selfServer: this.selfServerAddress(),
+      serverStatus: this.serverStatus.slice(0, 12),
       peers: this.squadList(),
       chat: this.chat.slice(-8),
       mapIndex: this._sessionInfo ? this._sessionInfo.mapIndex : null,
@@ -311,6 +318,95 @@ export class LanSession {
     return this._connect();
   }
 
+  /**
+   * 公网直连：连到页面之外的服务器。
+   *
+   * 页面本身可以从任何地方加载（本地文件、自己的服务器、别人的服务器），
+   * “连哪台服务器”由这里单独决定。地址解析成功后立刻改写传输层端点。
+   * @param {string} address 玩家输入的地址，见 parseServerAddress
+   * @param {'host'|'guest'} role
+   */
+  async connectTo(address, role, name) {
+    if (this.inSession) {
+      this.joinError = '已经在房间里，请先退出';
+      return false;
+    }
+    const parsed = parseServerAddress(address, { secure: typeof location !== 'undefined' && location.protocol === 'https:' });
+    if (!parsed.ok) {
+      this.phase = LAN_PHASE.FAILED;
+      this.joinError = parsed.error;
+      this.lastEvent = parsed.error;
+      if (this.onNotice) this.onNotice('无法连接', parsed.error, 'warn');
+      return false;
+    }
+    if (!this._t.setEndpoint(parsed.wsUrl)) {
+      this.phase = LAN_PHASE.FAILED;
+      this.joinError = this._t.lastError;
+      return false;
+    }
+    this.roomId = parsed.room || 'default';
+    this.serverLabel = parsed.label;
+    this.directAddress = address;
+    this._directMixedRisk = !!parsed.mixedContentRisk;
+    const ok = role === LAN_ROLE.GUEST ? await this.join(name) : await this.host(name);
+    // HTTPS 页面直连裸地址时默认按 wss 试；连不上的最常见原因就是对方只有明文，
+    // 这里把猜测写进错误信息，否则玩家只会看到一句“连接失败”。
+    if (!ok && this._directMixedRisk) {
+      this.joinError = `${this.joinError}（本页面是 HTTPS，若对方服务器只有明文 HTTP，需要给它配 HTTPS 或改用 http:// 打开本页面）`;
+      this.lastEvent = this.joinError;
+    }
+    return ok;
+  }
+
+  /**
+   * 探测若干服务器的在线状态，用于大厅的服务器列表。
+   * 走 HTTP 的 /lan/status（由 tools/lan-server.mjs 提供），2 秒超时。
+   * @returns {Promise<Array>} 每项 { address, ok, players, rooms, error }
+   */
+  async probeServers(list) {
+    const entries = Array.isArray(list) ? list.slice(0, 12) : [];
+    const results = await Promise.all(entries.map(async (entry) => {
+      const address = typeof entry === 'string' ? entry : (entry && entry.address) || '';
+      const parsed = parseServerAddress(address, {
+        secure: typeof location !== 'undefined' && location.protocol === 'https:',
+      });
+      if (!parsed.ok) return { address, ok: false, error: parsed.error };
+      const controller = typeof AbortController === 'function' ? new AbortController() : null;
+      const timer = controller ? setTimeout(() => controller.abort(), 2000) : 0;
+      try {
+        const res = await fetch(`${parsed.httpUrl}/lan/status`, {
+          cache: 'no-store',
+          signal: controller ? controller.signal : undefined,
+        });
+        if (!res.ok) return { address, ok: false, error: `HTTP ${res.status}` };
+        const body = await res.json();
+        return {
+          address,
+          label: parsed.label,
+          ok: body && body.ok === true,
+          players: Number(body && body.peers) || 0,
+          rooms: Array.isArray(body && body.rooms) ? body.rooms.length : 0,
+          error: '',
+        };
+      } catch (err) {
+        const msg = err && err.name === 'AbortError' ? '超时' : '无法访问';
+        return { address, ok: false, error: msg };
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }));
+    this.serverStatus = results;
+    return results;
+  }
+
+  /** 当前页面自身的服务器地址（“本机”那一项） */
+  selfServerAddress() {
+    try {
+      if (typeof location === 'undefined' || !location.host) return '';
+      return location.host;
+    } catch (_e) { return ''; }
+  }
+
   async _connect() {
     this.phase = LAN_PHASE.CONNECTING;
     this.joinError = '';
@@ -319,13 +415,18 @@ export class LanSession {
       const welcome = await this._t.connect({
         name: this.selfName,
         room: this.roomId,
-        version: '1',
+        version: String(PROTOCOL_VERSION),
       });
       this.hostId = welcome.hostId;
       this.roomId = welcome.room;
-      // 迟到的房主身份修正：先连上的人就是房主；若本地选了“创建房间”但没抢到
-      // 房主位（例如房间已存在），如实降级为房客，避免两个权威同时广播敌人。
-      if (this.role === LAN_ROLE.HOST && welcome.selfId !== welcome.hostId) {
+      // 房主身份以**服务器判定**为准，两个方向都要同步。
+      //
+      // 直连公网服时“房主 = 第一个进房间的人”，所以一个点“连接”进来的玩家
+      // 很可能就是权威主机；只做“降级”会让房间里有服务器认的房主、客户端却
+      // 以为自己只是房客 —— 结果谁都不跑刷怪导演，房间永远开不了局。
+      if (welcome.selfId === welcome.hostId) {
+        this.role = LAN_ROLE.HOST;
+      } else if (this.role === LAN_ROLE.HOST) {
         this.role = LAN_ROLE.GUEST;
         this.lastEvent = '房间里已有房主，已作为房客加入';
       }
@@ -357,6 +458,11 @@ export class LanSession {
     this._enemySeen.clear();
     this._sessionInfo = null;
     this._pendingStart = null;
+    // 直连过的端点要还原成本页面的服务器：否则下一次“创建房间”会莫名其妙
+    // 又连回上一次那台公网服务器，而玩家以为自己是在本机开房。
+    this.directAddress = '';
+    this._t.url = defaultWsUrl();
+    this.roomId = 'default';
     this._restoreEnemies();
   }
 
