@@ -60,7 +60,7 @@ const oldServer = http.createServer((_req, res) => {
 });
 const currentServer = http.createServer((_req, res) => {
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-  res.end('<!doctype html><title>IRONFALL</title><div>IRONFALL // BUILD 2.0.10</div>');
+  res.end('<!doctype html><title>IRONFALL</title><div>IRONFALL // BUILD 2.1.1</div>');
 });
 
 try {

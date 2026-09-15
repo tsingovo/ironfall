@@ -12,6 +12,7 @@
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { createLocalRoomControl } from './local-room-control.mjs';
 
 const file = process.argv[2];
 const port = Number(process.argv[3] || 18080);
@@ -30,7 +31,9 @@ try {
   process.exit(3);
 }
 
-const server = createServer((req, res) => {
+const control = createLocalRoomControl();
+const server = createServer(async (req, res) => {
+  if (await control.handle(req, res)) return;
   // 健康探测（launcher 用它判断服务器是否就绪）
   if (req.url === '/__ironfall_ping') {
     res.writeHead(200, { 'content-type': 'text/plain', 'cache-control': 'no-store' });
@@ -60,5 +63,5 @@ server.listen(port, '127.0.0.1', () => {
 });
 
 for (const sig of ['SIGINT', 'SIGTERM']) {
-  process.on(sig, () => { server.close(); process.exit(0); });
+  process.on(sig, async () => { await control.close(); server.close(() => process.exit(0)); });
 }

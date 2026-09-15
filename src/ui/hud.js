@@ -13,6 +13,10 @@
 
 // 玩家状态标签：速度表右侧的 chip 永远只取这 7 个值之一。
 const STATE_CHIPS = ['GROUNDED', 'SLIDE', 'WALLRUN', 'AIR', 'GRAPPLE', 'MANTLE', 'DASH'];
+const LAN_ITEM_NAMES = { r99: 'R-99', flatline: '平行步枪', volt: 'Volt', peacekeeper: '和平捍卫者',
+  longbow: '长弓', sentinel: '哨兵', knife: '战术刀', fists: '拳头', medkit: '医疗包',
+  battery: '护盾电池', syringe: '注射器', cell: '小型电池' };
+const lanItemName = (id) => LAN_ITEM_NAMES[id] || id || '徒手';
 
 // 元素池容量 —— 这是「DOM 节点不会无限增长」的硬上限。
 const POOL_DAMAGE = 32;
@@ -54,7 +58,7 @@ const CREDITS_LINES = [
 // 菜单静态描述：构造时一次性建 DOM，之后只切 class / 文本。
 const MENU_SPEC = {
   main: {
-    tag: 'IRONFALL // BUILD 2.0.10',
+    tag: 'IRONFALL // BUILD 2.1.1',
     title: '钢铁远征',
     sub: 'IRONFALL',
     note: '你是钢铁远征舰队熔炉世界里的拾荒者。搜刮、变强、活着撤离。',
@@ -108,6 +112,16 @@ const MENU_SPEC = {
       { key: '3', label: '操作说明', sub: 'CONTROLS', intent: 'open_help' },
       { key: '4', label: '返回主菜单', sub: 'ABANDON RUN', intent: 'quit_to_menu', danger: true },
       { key: '5', label: '退出游戏', sub: 'EXIT TO DESKTOP', intent: 'quit_game', danger: true },
+    ],
+  },
+  'lan-dead': {
+    tag: 'MULTIPLAYER', title: '等待重新部署', sub: 'RESPAWN / SPECTATE',
+    note: '友伤死亡不计失败；第 3 次被小怪击杀后只能观战。',
+    items: [
+      { key: '1', label: '重新部署', sub: 'RESPAWN', intent: 'lan_respawn', primary: true },
+      { key: '2', label: '观战 / 切换队友', sub: 'SPECTATE', intent: 'lan_spectate' },
+      { key: '3', label: '全队重开', sub: 'HOST ONLY', intent: 'lan_restart' },
+      { key: '4', label: '返回主菜单', sub: 'LEAVE ROOM', intent: 'quit_to_menu' },
     ],
   },
   dead: {
@@ -1036,6 +1050,54 @@ export class HUD {
         }
 
         this._append(body, status, nameRow, directRow, serverList, peers, chat, chatRow);
+        const invitePanel = mk('div', 'lan-invite-controls', 'menu-lan-field');
+        const roomInput = mk('input', 'lan-room-name', 'menu-lan-input');
+        if (roomInput) { roomInput.value = 'default'; roomInput.placeholder = '房间名'; }
+        const certInput = mk('input', 'lan-cert-file', 'menu-lan-input');
+        if (certInput?.setAttribute) { certInput.setAttribute('type', 'file'); certInput.setAttribute('accept', '.crt,.pem'); certInput.setAttribute('title', '可选：选择房主公开证书，不能选私钥'); }
+        const inviteInput = mk('input', 'lan-invite-file', 'menu-lan-input');
+        if (inviteInput?.setAttribute) { inviteInput.setAttribute('type', 'file'); inviteInput.setAttribute('accept', '.json'); inviteInput.setAttribute('title', '选择朋友发来的房间邀请 JSON'); }
+        const exportBtn = mk('button', 'lan-invite-export', 'menu-lan-btn');
+        const importBtn = mk('button', 'lan-invite-import', 'menu-lan-btn');
+        if (exportBtn) exportBtn.textContent = '导出邀请（地址填上方）';
+        if (importBtn) importBtn.textContent = '确认导入并连接';
+        const help = mk('div', 'lan-invite-help', 'menu-note');
+        if (help) help.textContent = '创建房间会自动启动本机服务。导出：填写上方完整 http:// 或 https:// 穿透地址，按需选择公开 .crt。导入：选择朋友的邀请文件后确认连接。';
+        const labelled = (text, input) => { const label = mk('label', '', ''); if (label) label.textContent = text; this._append(label, input); return label; };
+        this._append(invitePanel, labelled('房间名（开房与邀请须一致）', roomInput), labelled('房主公开证书（可选，不能选 .key）', certInput), exportBtn, labelled('朋友发来的邀请 JSON', inviteInput), importBtn);
+        this._append(body, invitePanel, help);
+        el['lan-room-name'] = roomInput;
+        const roomApi = async (operation, data) => {
+          const r = await fetch('/__room/' + operation, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(data) });
+          const text = await r.text();
+          let result; try { result = JSON.parse(text); } catch (_) { throw new Error('请使用新版“开始游戏”入口，本页面不支持游戏内联机配置'); }
+          if (!r.ok || result.error) throw new Error(result.error || '操作失败');
+          return result;
+        };
+        this._bind(exportBtn, 'click', async () => {
+          try {
+            const file = certInput.files?.[0];
+            if (file?.size > 32768) throw new Error('证书文件过大');
+            const endpoint = String(directInput.value || '').trim();
+            const { invite } = await roomApi('export', { format: 'ironfall-room-v1', endpoint, room: roomInput.value || 'default', certificate: file ? await file.text() : '' });
+            const url = URL.createObjectURL(new Blob([JSON.stringify(invite, null, 2)], { type: 'application/json' }));
+            const link = this.doc.createElement('a'); link.href = url; link.download = '房间邀请.ironfall-room.json'; link.click();
+            setTimeout(() => URL.revokeObjectURL(url), 30000);
+            this.toast('邀请已导出', '将下载的 JSON 发给朋友；不包含私钥', 'good');
+          } catch (e) { this.toast('导出失败', e.message, 'warn'); }
+        });
+        this._bind(importBtn, 'click', async () => {
+          try {
+            if (this._lanState?.peers?.length > 1 || this._lanState?.phase === 'playing' || this._lanState?.phase === 'lobby') throw new Error('请先退出当前房间再导入');
+            const file = inviteInput.files?.[0];
+            if (!file || file.size > 65536) throw new Error('请选择有效的房间邀请 JSON（64 KB 以内）');
+            const invite = JSON.parse((await file.text()).replace(/^\uFEFF/, ''));
+            const checked = (await roomApi('export', invite)).invite;
+            if (!window.confirm(`仅导入可信房主发来的邀请。\n地址：${checked.endpoint}\n房间：${checked.room}\n证书：${checked.fingerprint || '默认验证（HTTP 则无加密）'}\n确认连接？`)) return;
+            const result = await roomApi('join', checked);
+            this._intent('lan_direct_connect', { value: result.address });
+          } catch (e) { this.toast('导入失败', e.message, 'warn'); }
+        });
         this._append(inner, body);
         el['lan-status'] = status;
         el['lan-name-input'] = nameInput;
@@ -2229,6 +2291,55 @@ export class HUD {
     this._lanState = state && typeof state === 'object' ? state : null;
   }
 
+  setLanDeathState(state) {
+    if (!state) return;
+    this._lanDeathState = state;
+    const label = state.allFailed ? '全队已失败，等待房主重开'
+      : state.eliminated ? '小怪击杀次数已达 3 次，只能观战' : '可以重新部署（友伤不扣次数）';
+    this._text(this.el['menu-lan-dead-note'], `${label} · 小怪死亡 ${state.pveDeaths || 0}/3${state.targetName ? ' · 观战：' + state.targetName : ''}`);
+    for (const entry of this._menuItems?.['lan-dead'] || []) {
+      const allowed = entry.spec.intent === 'lan_respawn' ? state.canRespawn
+        : entry.spec.intent === 'lan_restart' ? state.allFailed && state.isHost : true;
+      if (entry.el) entry.el.disabled = !allowed;
+      entry.spec.disabled = !allowed;
+      this._style(entry.el, 'opacity', allowed ? '1' : '0.35');
+    }
+  }
+
+  // Called with the world camera before rendering the first-person weapon camera.
+  setLanNameplates(peers, engine) {
+    if (!this._lanNameplateEls) {
+      this._lanNameplateEls = [];
+      for (let i = 0; i < 3; i++) {
+        if (!this.doc?.createElement) return;
+        const el = this.doc.createElement('div');
+        el.className = 'lan-world-nameplate';
+        this.root.appendChild(el);
+        this._lanNameplateEls.push(el);
+      }
+    }
+    const vp = engine?.viewProj;
+    const eye = engine?.cameraPos;
+    const world = this.ctx?.world;
+    const w = this._rect.w, h = this._rect.h;
+    for (let i = 0; i < 3; i++) {
+      const el = this._lanNameplateEls[i], peer = peers?.[i], pos = peer?.pos;
+      let visible = !!(peer && peer.alive && pos && vp && eye && !this._menu);
+      if (visible) {
+        const cw = vp[3]*pos[0] + vp[7]*pos[1] + vp[11]*pos[2] + vp[15];
+        const x = (vp[0]*pos[0]+vp[4]*pos[1]+vp[8]*pos[2]+vp[12])/cw;
+        const y = (vp[1]*pos[0]+vp[5]*pos[1]+vp[9]*pos[2]+vp[13])/cw;
+        visible = cw > 0.05 && Math.abs(x) < 1 && Math.abs(y) < 1 &&
+          (!world?.lineOfSight || world.lineOfSight(eye, pos, { hitBoxes: true, hitTriangles: true }));
+        if (visible) {
+          this._style(el, 'transform', `translate(${((x+1)*0.5*w).toFixed(1)}px,${((1-y)*0.5*h).toFixed(1)}px) translate(-50%,-100%)`);
+          this._text(el, `${peer.name || '玩家'} · ${lanItemName(peer.heldItem || peer.weaponId)}`);
+        }
+      }
+      this._style(el, 'display', visible ? 'block' : 'none');
+    }
+  }
+
   /**
    * 注入"远征简报"内容：世界观背景 + 本局任务。
    * 数据由 game 提供（任务阶梯里的 title/brief + 生物群系描述）。
@@ -2425,7 +2536,7 @@ export class HUD {
       const frac = clamp01((hp + sh) / (maxHp + maxSh));
       const role = p.isHost ? '房主' : '队员';
       this._text(this.el['lan-peer-role-' + i],
-        `${role} · ${Math.round(hp)}/${Math.round(sh)}${p.alive === false ? ' · 阵亡' : ''}`);
+        `${role} · ${Math.round(hp)}/${Math.round(sh)} · ${lanItemName(p.heldItem || p.weaponId)} · 小怪死亡 ${p.pveDeaths || 0}/3${p.eliminated ? ' · 观战' : p.alive === false ? ' · 等待部署' : ''}`);
       this._style(this.el['lan-peer-fill-' + i], 'transform', `scaleX(${frac.toFixed(3)})`);
       this._cls(this.el['lan-peer-' + i], 'menu-lan-peer--dead', p.alive === false);
     }

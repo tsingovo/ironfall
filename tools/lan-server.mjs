@@ -297,8 +297,9 @@ export function upgradeToWebSocket(req, socket, head, handlers) {
   ].join('\r\n'));
   socket.setNoDelay(true);
   const ws = new WsSocket(socket);
-  if (head && head.length) ws._onData(head);
   if (handlers && handlers.onOpen) handlers.onOpen(ws, req);
+  // 穿透代理可能将升级请求与第一帧合并转发；先注册消息处理器再处理 hello。
+  if (head && head.length) queueMicrotask(() => ws._onData(head));
   return ws;
 }
 
@@ -372,7 +373,7 @@ export function sanitizeName(raw, fallback) {
 }
 
 export function createLanServer(opts = {}) {
-  const port = Number(opts.port || DEFAULT_PORT);
+  const port = Number(opts.port ?? DEFAULT_PORT);
   const host = opts.host || '0.0.0.0';
   const rooms = new Map();
   const allPeers = new Set();
@@ -602,7 +603,10 @@ export function createLanServer(opts = {}) {
     ws.id = 'sock' + nextPeerId;
     allPeers.add(peer);
     ws.onMessage = (text, isBinary) => handleMessage(peer, text, isBinary);
-    ws.onClose = () => handleClose(peer);
+    ws.onClose = (code, reason) => {
+      if (opts.log) opts.log(`连接关闭 ${peer.name || '未入房'} (${peer.id || '-'}) code=${code} reason=${reason || '-'} remote=${socket.remoteAddress || '-'}`);
+      handleClose(peer);
+    };
   });
 
   // 心跳：清掉半开连接（拔网线/休眠），否则房间里会留下永远不动的人。

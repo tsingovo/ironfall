@@ -1428,7 +1428,7 @@ export class WeaponSystem {
       this.projectiles.flashTime = 0;
       this.projectiles.flashWorldTime = 0;
     }
-    Events.emit('weapon:fire', { def, ammo: st.ammo, charged });
+    Events.emit('weapon:fire', { def, ammo: st.ammo, charged, origin: Array.from(muzzleWorld), dir: Array.from(baseDir), end: results[0]?.endPoint ? Array.from(results[0].endPoint) : null });
     Events.emit('audio:play', { name: def.fireSound, gain: 0.9 });
     // 开火不再产生额外的随机屏幕震动；枪械本身的后坐/压枪仍正常保留。
     // 想恢复抖动：把 CFG.fx.fireScreenShake 设为 true。
@@ -1509,6 +1509,17 @@ export class WeaponSystem {
 
     const enemyT = enemyHit ? enemyHit.t : Infinity;
     const worldT = worldHit.hit ? worldHit.t : Infinity;
+
+    const query = { origin, dir, maxDistance: Math.min(maxDist, enemyT, worldT), hit: null };
+    Events.emit('net:raycast-player', query);
+    if (query.hit && query.hit.t <= query.maxDistance) {
+      const hit = query.hit;
+      const body = charged && def.damageCharged != null ? def.damageCharged : def.damage;
+      const head = charged && def.damageHeadCharged != null ? def.damageHeadCharged : (def.damageHead || body);
+      const damage = (hit.headshot ? head : body) * this._falloff(def, hit.t) * (W.damageMul || 1);
+      Events.emit('net:damage-player', { targetId: hit.id, damage, headshot: !!hit.headshot, point: Array.from(hit.point), dir: Array.from(dir) });
+      return { ...res, hit: true, playerId: hit.id, point: hit.point, endPoint: hit.point, damage, headshot: !!hit.headshot, dist: hit.t };
+    }
 
     if (enemyHit && enemyT <= worldT) {
       // 距离衰减

@@ -1,10 +1,17 @@
-# IRONFALL 交接文档
+# IRONFALL 当前交接（2026-09-15）
 
-> 项目目录：`F:\桌面\codex桌面\ironfall`  
-> 最后更新：2026-09-13（Esc/强化弹窗、补给、ADS、任务信标、楼梯、危险区、35 发弹匣、CMD 启动）  
-> 本目录当前不是独立 Git 仓库；交接内容以源码和自动化结果为准。
+当前目标：通用邀请联机、晚加入/名单/动作同步、友伤与复活观战。代码已集成，2.1.0 本地包已构建，未发布未推送。
+
+- 仓库为独立 Git，main；Gitee远端gitee。历史说明如下仅作参考，以代码为准。
+- 通用连接入口 tools/room-connect.mjs create/join，房间schema tools/room-invite.mjs；邀请内仅公开证书，不读写私钥，不安装根证书，不关闭TLS验证。build-release默认包含通用邀请启动脚本，--friend仅旧模式。
+- 协议为2，必须同版；SESSION晚加入与重新开局sid、名册回调刷新、暂停仍网络更新；nameplates由HUD世界投影遮挡。
+- PvP死亡不计额度，PvE/环境第三次死亡淘汰，个人重生不清世界，全员淘汰后结算一次，房主重开。近战友伤尚未专门扩展，当前枪械hitscan覆盖友伤。
+- 验证：test-room-invite、test-tunnel-regression、test-net-sync、test-lan-combat通过；test-hud 189/189；build-standalone/build-release通过。未完整真实双机实战。
+- 下一步：用户双机测试列表、晚加入敌人、弹道钩锁名牌、第三次PvE观战与全队重开；若失败先记录双方BUILD/房主日志，勿把能入房等同于实战同步已全面验证。
+- 产物 release/IRONFALL-2.1.0-offline.zip，不含个人endpoint/certificate/private key。旧friend包属于个人专用，不公开。
 
 ---
+## 历史记录（端口/路径/版本可能过时）
 
 ## 1. 启动
 
@@ -250,3 +257,11 @@ tools/test-ui-input.mjs     UI、出生、枪/敌人真实像素、Esc 验证
 tools/headless-check.mjs    物理/射击/AI/性能 + 独立曳光像素测试
 docs/CONTRACTS.md           跨模块接口契约
 ```
+
+## 2026-09-15 单入口联机 2.1.1
+- 用户要求所有开房/邀请/加入在游戏内操作，发行包仅一个“开始游戏.cmd”。已接入 serve / serve-single 本机 POST 控制 API；仅允许 loopback、准确 Host/Origin，邀请仅公开证书，保留 TLS 验证。
+- 大厅创建房间自动启动 18200；导出邀请选择完整地址/公开 crt；朋友选 JSON 确认后本机桥接连接。穿透客户端仍外部运行。旧开发脚本仅兼容维护，通用包不再包含它们。
+- 修复测试用 LAN port:0 被默认值覆盖；桥接允许准确的游戏页面 Origin，拒绝缺失/外部 Origin；状态仅向指定 Origin 提供 CORS。
+- 已验证：local-room-control、room-invite、tunnel-regression、net-sync、lan-combat、HUD 189/189、launch-version；解压实际发布包后启动 serve-single 并检查 BUILD/API 成功；ZIP 只有一个 CMD。未执行真实 GUI 或双机游玩，用户自行测试。
+- 本地产物 release/IRONFALL-2.1.1-offline.zip，SHA256 9D10A4B0E132993AA3AE035C282375B423572E225C2A6ED08E8DCE905CDE7419。未 push、未发布。
+- 保留所有未提交的 2.1.0 联机修改。后续关注真实多人体验与重新打开旧后台服务的生命周期；不要随意终止用户运行中的服务器。

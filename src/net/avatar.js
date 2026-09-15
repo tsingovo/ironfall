@@ -9,7 +9,7 @@
 import * as M from '../core/math.js';
 
 const MAX_REMOTE = 4;
-const PARTS_PER_BODY = 21;
+const PARTS_PER_BODY = 32;
 
 /**
  * 身体部件表。pos 为“站立时”相对脚底的局部偏移。
@@ -161,6 +161,28 @@ export class AvatarRenderer {
         cols[co4 + 2] = Math.min(1, cb + flash * 0.85);
         cols[co4 + 3] = 1;
         n++;
+      }
+      if (alive) {
+        // Distinct third-person silhouettes, including the item actually being used.
+        const held = p.heldItem || p.weaponId;
+        const sniper = held === 'sentinel' || held === 'longbow';
+        const medical = ['medkit', 'battery', 'cell', 'syringe'].includes(held);
+        const knife = held === 'knife' || held === 'melee';
+        const color = medical ? (held === 'battery' || held === 'cell' ? [0.12, 0.45, 0.95] : [0.9, 0.22, 0.2])
+          : sniper ? [0.10, 0.22, 0.45] : held === 'r99' ? [0.75, 0.8, 0.86] : [0.22, 0.25, 0.28];
+        const parts = held === 'fists' ? [] : medical ? [[0.12, 1.15, -0.42, 0.14, 0.3, 0.14]]
+          : knife ? [[0.2, 1.18, -0.48, 0.06, 0.025, 0.38], [0.2, 1.18, -0.24, 0.065, 0.06, 0.14]]
+          : [[0.18, 1.22, -0.42, 0.12, 0.14, sniper ? 0.66 : 0.4],
+             [0.18, 1.23, sniper ? -0.94 : -0.7, 0.045, 0.045, sniper ? 0.4 : 0.23],
+             [0.18, 1.07, -0.37, 0.075, 0.23, 0.13],
+             [0.18, 1.23, -0.16, 0.11, 0.12, 0.2],
+             [0.18, 1.35, -0.46, sniper ? 0.09 : 0.055, 0.08, sniper ? 0.24 : 0.065]];
+        for (const [lx, ly, lz, sx, sy, sz] of parts) {
+          const co = Math.cos(yaw), si = Math.sin(yaw);
+          this._pos.set([p.pos[0] + lx * co + lz * si, bodyY + ly, p.pos[2] - lx * si + lz * co]);
+          M.m4Compose(this._pos, yaw, p.pitch || 0, 0, [sx, sy, sz], mats.subarray(n * 16, n * 16 + 16));
+          cols.set([...color, 1], n * 4); n++;
+        }
       }
       bodies++;
     }

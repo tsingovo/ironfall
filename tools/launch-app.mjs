@@ -12,7 +12,8 @@ const logFile = join(root, 'launch.log');
 // 2.0 使用独立端口，绝不能复用 1.x 在 18080 上残留的单文件服务器。
 // 旧服务器返回同样的 <title>，此前仅按标题探测会让新版启动器打开旧游戏。
 let port = Number(process.env.IRONFALL_PORT || 18240);
-let url = `http://127.0.0.1:${port}/?standalone=1`;
+const roomQuery = process.env.IRONFALL_ROOM ? `&room=${encodeURIComponent(process.env.IRONFALL_ROOM)}` : '';
+let url = `http://127.0.0.1:${port}/?standalone=1${roomQuery}`;
 
 function log(message) {
   const line = `[${new Date().toLocaleString('zh-CN', { hour12: false })}] ${message}`;
@@ -120,11 +121,11 @@ async function probeServer(candidatePort = port) {
   const rootPage = await getText(`${base}/?standalone=1`);
   if (!rootPage.reachable) return { reachable: false, ironfall: false, currentBuild: false };
   const ironfall = rootPage.status === 200 && rootPage.text.includes('<title>IRONFALL');
-  let currentBuild = ironfall && rootPage.text.includes('IRONFALL // BUILD 2.0.10');
+  let currentBuild = ironfall && rootPage.text.includes('IRONFALL // BUILD 2.1.1');
   // 开发目录的 index.html 不内联 HUD，因此再检查源码；发布包的单文件在上一步即可识别。
   if (ironfall && !currentBuild) {
     const hudSource = await getText(`${base}/src/ui/hud.js`);
-    currentBuild = hudSource.status === 200 && hudSource.text.includes('IRONFALL // BUILD 2.0.10');
+    currentBuild = hudSource.status === 200 && hudSource.text.includes('IRONFALL // BUILD 2.1.1');
   }
   return { reachable: true, ironfall, currentBuild };
 }
@@ -145,7 +146,7 @@ async function ensureServer() {
     }
     if (!found) throw new Error(`端口 ${oldPort}—${oldPort + 30} 均被占用`);
     port = found;
-    url = `http://127.0.0.1:${port}/?standalone=1`;
+    url = `http://127.0.0.1:${port}/?standalone=1${roomQuery}`;
     browserArgs[0] = `--app=${url}`;
     const reason = existing.ironfall ? '检测到旧版 IRONFALL 实例' : '默认端口被其他程序占用';
     log(`${reason}（端口 ${oldPort}），本次从当前目录启动新服务器，端口 ${port}。旧游戏窗口将关闭。`);

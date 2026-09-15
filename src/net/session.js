@@ -91,6 +91,8 @@ export class RemotePlayer {
 
   /** 收到一份新状态：写入插值目标 */
   setNetState(decoded) {
+    this.stale = false;
+    this.currentHeight = decoded.state.crouching || decoded.state.sliding ? 1.15 : 1.8;
     this.health = decoded.health;
     this.shield = decoded.shield;
     this.maxHealth = decoded.maxHealth;
@@ -162,7 +164,8 @@ export class RemotePlayer {
       maxShield: this.maxShield,
       latency: Math.round(this.latency),
       stale: !!this.stale,
-      weaponId: this.weaponId,
+      weaponId: this.weaponId, heldItem: this.heldItem || this.weaponId,
+      pveDeaths: this.pveDeaths || 0, eliminated: !!this.eliminated,
       distance: 0,
     };
   }
@@ -177,7 +180,7 @@ export class LanSession {
     this.role = LAN_ROLE.OFF;
     this.phase = LAN_PHASE.OFF;
     this.selfName = '玩家';
-    this.roomId = 'default';
+    this.roomId = entryRoom();
     this.hostId = null;
     /** 直连时玩家输入的原始地址；同页面联机时为空 */
     this.directAddress = '';
@@ -214,9 +217,31 @@ export class LanSession {
     this._hitQueue = [];
     this._sessionInfo = null;
     this._pendingStart = null;
+    this._sessionKey = null;
+
+    this._eventOff = [
+      Events.on('weapon:fire', (shot) => {
+        if (!this.active || !this.online || !shot?.origin || !shot?.dir) return;
+        this._t.sendGame({ k: MSG.SHOT, o: shot.origin, e: shot.end, d: shot.dir,
+          w: shot.def.id, c: !!shot.charged }, { reliable: true });
+      }),
+      Events.on('net:raycast-player', (query) => this.raycastPlayer(query)),
+      Events.on('net:damage-player', (hit) => {
+        if (!this.active || !this.online || !this.remotes.has(hit.targetId)) return;
+        this._t.sendGame({ k: MSG.DAMAGE, to: hit.targetId, a: hit.damage,
+          source: 'player', d: [0, 0, 0], hs: !!hit.headshot }, { reliable: true });
+      }),
+    ];
   }
 
   // ---------------------------------------------------------------- 查询
+
+  get players() { return [...this.remotes.values()]; }
+  nameplates() {
+    return this.players.filter(r => r._hasTarget && !r.stale).map(r => ({
+      ...r.squadInfo(), pos: [r.pos[0], r.pos[1] + r.currentHeight + 0.28, r.pos[2]],
+    }));
+  }
 
   get online() { return this._t.online; }
   get selfId() { return this._t.selfId; }
@@ -271,7 +296,7 @@ export class LanSession {
       maxHealth: p ? p.maxHealth : 100,
       maxShield: p ? p.maxShield : 0,
       latency: this.latency,
-      stale: false,
+      stale: false, pveDeaths: p?.pveDeaths || 0, eliminated: !!p?.eliminated,
     });
 
     const out = [];
@@ -433,6 +458,8 @@ export class LanSession {
       this.phase = LAN_PHASE.LOBBY;
       this._applyRoster(welcome);
       this._t.sendState({ ready: true, inGame: false });
+      // A guest may arrive long after the host's one-shot SESSION broadcast.
+      if (!this.isHost) this._t.sendGame({ k: MSG.HELLO }, { reliable: true });
       return true;
     } catch (err) {
       this.phase = LAN_PHASE.FAILED;
@@ -457,12 +484,13 @@ export class LanSession {
     this._enemyTargets.clear();
     this._enemySeen.clear();
     this._sessionInfo = null;
+    this._sessionKey = null;
     this._pendingStart = null;
     // 直连过的端点要还原成本页面的服务器：否则下一次“创建房间”会莫名其妙
     // 又连回上一次那台公网服务器，而玩家以为自己是在本机开房。
     this.directAddress = '';
     this._t.url = defaultWsUrl();
-    this.roomId = 'default';
+    this.roomId = entryRoom();
     this._restoreEnemies();
   }
 
@@ -486,7 +514,11 @@ export class LanSession {
     } else if (msg && msg.t === SRV.ROSTER) {
       this.hostId = msg.hostId;
     }
+    this.role = this.hostId === this.selfId ? LAN_ROLE.HOST : LAN_ROLE.GUEST;
     this._applyRoster(msg);
+    if (msg?.t === SRV.WELCOME && this._sessionInfo && !this.isHost) {
+      this._t.sendGame({ k: MSG.HELLO }, { reliable: true });
+    }
     if (this.onRosterChange) this.onRosterChange();
   }
 
@@ -566,25 +598,42 @@ export class LanSession {
         r._decoded = decoded;
         r.setNetState(decoded);
         r.lastPacketAt = nowMs();
+        r.weaponId = typeof data.w === 'string' ? data.w : decoded.weaponId;
+        r.heldItem = typeof data.item === 'string' ? data.item : r.weaponId;
+        r.pveDeaths = Math.max(0, Number(data.deaths) || 0);
+        r.eliminated = !!data.eliminated;
+        r.grapple.active = !!decoded.grappling && validVec(data.g);
+        if (r.grapple.active) r.grapple.point = data.g.slice(0, 3);
         break;
       }
+      case MSG.HELLO:
+        if (this.isHost && this._sessionInfo && this.active) {
+          this._sendSession(from);
+          this._broadcastEnemySnapshot();
+          this._broadcastRunState();
+        }
+        break;
+      case MSG.SHOT:
+        this._remoteShot(from, data);
+        break;
       case MSG.ENEMY:
-        if (!this.isHost) this._applyEnemySnapshot(data.e);
+      case MSG.ENEMY_FULL:
+        if (!this.isHost && from === this.hostId && this.active) this._applyEnemySnapshot(data.e);
         break;
       case MSG.HIT:
         if (this.isHost) this._applyRemoteHits(from, data.h);
         break;
       case MSG.DAMAGE:
-        if (data.to === this._t.selfId) this._applyIncomingDamage(data);
+        if (data.to === this._t.selfId && (from === this.hostId || (data.source === 'player' && this.remotes.has(from)))) this._applyIncomingDamage(data, from);
         break;
       case MSG.SESSION:
-        if (!this.isHost) this._onRemoteSession(data);
+        if (!this.isHost && from === this.hostId && (!data.to || data.to === this.selfId)) this._onRemoteSession(data);
         break;
       case MSG.RUN:
-        if (!this.isHost) this._applyRunState(data);
+        if (!this.isHost && from === this.hostId && this.active) this._applyRunState(data);
         break;
       case MSG.WORLD_EVENT:
-        if (!this.isHost) this._onWorldEvent(from, data);
+        if (!this.isHost && from === this.hostId) this._onWorldEvent(from, data);
         break;
       case MSG.CHAT:
         this._pushChat({ from, name: data.n || '', text: sanitizeChat(data.m), time: nowMs(), self: false });
@@ -595,7 +644,7 @@ export class LanSession {
     }
   }
 
-  _applyIncomingDamage(data) {
+  _applyIncomingDamage(data, from) {
     const game = this.game;
     if (!game || !game.player || !game.player.alive) return;
     const amount = Number(data.a) || 0;
@@ -604,7 +653,7 @@ export class LanSession {
     const dir = new Float32Array([d[0], d[1], d[2]]);
     // source 必须非 null：Player.applyDamage 用 `source !== null` 判定无敌帧，
     // 传 null 会绕过出生保护与作弊死亡后的无敌时间。
-    game.player.applyDamage(amount, dir, 'enemy');
+    game.player.applyDamage(Math.min(amount, 500), dir, data.source === 'player' ? { kind: 'player', playerId: from } : 'enemy');
   }
 
   _applyRemoteHits(from, hits) {
@@ -626,15 +675,21 @@ export class LanSession {
       tier: data.t | 0,
       mapName: data.n || '',
     };
+    const key = data.sid || `${info.mapIndex}:${info.seed}:${info.tier}`;
+    if (this._sessionKey === key && this.active) return;
+    this._sessionKey = key;
     this._sessionInfo = info;
     this.phase = LAN_PHASE.PLAYING;
+    this._t.sendState({ ready: true, inGame: true });
     if (this.onSessionStart) this.onSessionStart(info);
   }
 
   _applyRunState(data) {
     const run = this.game && this.game.run;
     if (!run) return;
-    if (typeof data.p === 'string') run.phase = data.p;
+    // A replicated terminal phase must not suppress local one-time settlement.
+    if (typeof data.p === 'string' && data.p !== 'dead' && data.p !== 'extracted') run.phase = data.p;
+    if (data.p === 'extracted' && typeof run.end === 'function') run.end(true);
     if (Array.isArray(data.o) && Array.isArray(run.objectives)) {
       for (const row of data.o) {
         const o = run.objectives[row[0] | 0];
@@ -773,8 +828,16 @@ export class LanSession {
   announceSession(info) {
     this._sessionInfo = info;
     this.phase = LAN_PHASE.PLAYING;
+    this._sessionKey = `${info.mapIndex}:${info.seed}:${info.tier}:${Date.now()}`;
+    this._sendSession();
+    this._t.sendState({ ready: true, inGame: true });
+  }
+
+  _sendSession(to) {
+    const info = this._sessionInfo;
+    if (!info) return;
     this._t.sendGame({
-      k: MSG.SESSION,
+      k: MSG.SESSION, to, sid: this._sessionKey,
       i: info.mapIndex | 0,
       s: info.seed | 0,
       t: info.tier | 0,
@@ -840,7 +903,12 @@ export class LanSession {
     if (!game || !game.player) return;
     const codec = this._ensureCodec();
     const tuple = codec.encodePlayer(game.player, game.weapons, this._selfTuple);
-    this._t.sendGame({ k: MSG.PLAYER, s: Array.from(tuple) });
+    const p = game.player;
+    this._t.sendGame({ k: MSG.PLAYER, s: Array.from(tuple), w: game.weapons?.current?.id,
+      item: p.healing?.useActive ? ['medkit', 'battery', 'syringe', 'cell'][p.healing.useItem]
+        : game.weapons?.current?.id === 'melee' ? (game.weapons._hasKnife?.() ? 'knife' : 'fists') : game.weapons?.current?.id,
+      g: p.grapple?.active ? Array.from(p.grapple.point) : null,
+      deaths: p.pveDeaths || 0, eliminated: !!p.eliminated });
   }
 
   _broadcastRunState() {
@@ -893,6 +961,45 @@ export class LanSession {
     this._t.sendGame({ k: MSG.WORLD_EVENT, e: EV.TOAST, title, sub, kind });
   }
 
+  raycastPlayer(query) {
+    if (!this.active || !query || !validVec(query.origin) || !validVec(query.dir)) return;
+    let nearest = query.maxDistance;
+    for (const r of this.remotes.values()) {
+      if (!r.alive || r.stale || !r._hasTarget) continue;
+      // Vertical hit box; maxDistance is already clipped to the nearest world/enemy hit.
+      const lo = [r.pos[0] - r.radius, r.pos[1], r.pos[2] - r.radius];
+      const hi = [r.pos[0] + r.radius, r.pos[1] + r.currentHeight, r.pos[2] + r.radius];
+      let enter = 0, exit = nearest;
+      for (let i = 0; i < 3; i++) {
+        if (Math.abs(query.dir[i]) < 1e-8) {
+          if (query.origin[i] < lo[i] || query.origin[i] > hi[i]) { exit = -1; break; }
+        } else {
+          const a = (lo[i] - query.origin[i]) / query.dir[i];
+          const b = (hi[i] - query.origin[i]) / query.dir[i];
+          enter = Math.max(enter, Math.min(a, b)); exit = Math.min(exit, Math.max(a, b));
+        }
+      }
+      if (enter > exit || exit < 0 || enter >= nearest) continue;
+      nearest = enter;
+      const point = query.origin.map((v, i) => v + query.dir[i] * enter);
+      query.hit = { id: r.id, t: enter, point, normal: query.dir.map(v => -v), headshot: point[1] > r.pos[1] + r.currentHeight * 0.82 };
+    }
+  }
+
+  _remoteShot(from, data) {
+    if (!this.active || !this.remotes.has(from) || !validVec(data.o) || !validVec(data.d) || data.w === 'melee') return;
+    const r = this.remotes.get(from);
+    // Reject unreasonable effect origins instead of drawing arbitrary remote geometry.
+    if (!r._hasTarget || Math.hypot(...data.o.map((v, i) => v - r.pos[i])) > 6) return;
+    const projectiles = this.game.weapons?.projectiles;
+    if (!projectiles) return;
+    projectiles.spawnTracer(data.o, validVec(data.e) ? data.e : null, {
+      color: data.c ? [0.3, 0.85, 1] : [1, 0.8, 0.4], width: 0.035,
+      life: 0.22, dir: data.d, minLength: 5, length: 30,
+    });
+    Events.emit('audio:play', { name: data.w === 'sentinel' ? 'sniper_fire' : data.w === 'flatline' ? 'flatline_fire' : 'r99_fire', gain: Math.max(0.04, 0.45 / (1 + Math.hypot(...r.pos.map((v,i) => v - this.game.player.pos[i])) / 18)) });
+  }
+
   // ---------------------------------------------------------------- 渲染 / 聊天
 
   /** 在主相机设置好之后调用，绘制所有队友的第三人称模型 */
@@ -900,7 +1007,11 @@ export class LanSession {
     if (!this.inSession) return 0;
     if (!this.avatar) this.avatar = new AvatarRenderer(engine);
     const list = [...this.remotes.values()];
-    return this.avatar.render(engine, list, dt);
+    const count = this.avatar.render(engine, list.filter(r => r._hasTarget), dt);
+    for (const r of list) if (r.grapple.active && r.alive && !r.stale && r.grapple.point) {
+      engine.drawLine(r.eyePos, r.grapple.point, [0.28, 0.8, 1, 1]);
+    }
+    return count;
   }
 
   sendChat(text) {
@@ -982,3 +1093,9 @@ function sanitizeNameForUI(raw) {
 }
 
 export default LanSession;
+
+function validVec(v) { return (Array.isArray(v) || ArrayBuffer.isView(v)) && v.length >= 3 && Array.from(v).slice(0, 3).every(Number.isFinite); }
+function entryRoom() {
+  try { return new URLSearchParams(location.search).get('room')?.replace(/[^\w\u4e00-\u9fa5-]/g, '').slice(0, 32) || 'default'; }
+  catch { return 'default'; }
+}

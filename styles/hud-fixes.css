@@ -216,3 +216,13 @@ body.menu-open #hud {
   color: #7fe3ff;
   font-variant-numeric: tabular-nums;
 }
+
+/* Multiplayer world labels: textContent only, no input capture. */
+.lan-world-nameplate { position: absolute; top: 0; left: 0; z-index: 35; pointer-events: none; white-space: nowrap; color: #b5f4ff; font: 600 14px/1.5 sans-serif; text-shadow: 0 1px 3px #000; background: #071622bb; border: 1px solid #5bcde080; border-radius: 3px; padding: 2px 7px; }
+.menu-lan-peer-role { font-size: 12px; }
+
+/* In-game room setup: stacked, labelled controls rather than one overflowing row. */
+#lan-invite-controls { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; margin-top: 12px; }
+#lan-invite-controls label { display: flex; flex-direction: column; gap: 5px; min-width: 0; font-size: 12px; }
+#lan-invite-controls input { width: 100%; min-width: 0; box-sizing: border-box; }
+#lan-invite-help { white-space: normal; line-height: 1.6; }

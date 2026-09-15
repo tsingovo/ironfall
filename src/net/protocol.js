@@ -4,8 +4,8 @@
 // 符号表（武器 id、移动状态、敌人兵种）由调用方通过 createCodec() 注入，
 // 避免 net/* 反向依赖 weapons.js / enemies.js。
 
-export const NET_VERSION = '1';
-export const PROTOCOL_VERSION = 1;
+export const NET_VERSION = '2';
+export const PROTOCOL_VERSION = 2;
 
 /** 服务器的默认端口（与 tools/lan-server.mjs 的 DEFAULT_PORT 保持一致） */
 export const DEFAULT_SERVER_PORT = 18200;
@@ -140,6 +140,7 @@ export const SRV = Object.freeze({
 
 /** 游戏层消息种类（放在信封的 data.k 里） */
 export const MSG = Object.freeze({
+  SHOT: 'shot',
   HELLO: 'hi',            // 房客 → 房主：握手，报告自己的名字与能力
   SESSION: 'sess',        // 房主 → 全体：本局配置（地图种子、任务、名单）
   PLAYER: 'ps',           // 每个 peer → 全体：自身玩家状态（30 Hz）

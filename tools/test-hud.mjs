@@ -1097,7 +1097,8 @@ group('G7 DOM 节点预算');
   const created = mockStats.created - createdBeforeStress;
   eq('压力测试后节点总数 == 构造基线', now, baselineNodes);
   eq('压力测试后累计创建节点数 == 压力前快照', created, 0);
-  check('节点总数处于合理预算内 (<900)', now < 900, '节点数 = ' + now);
+  // In-game invitation form adds a fixed set of labelled controls; growth checks above remain unchanged.
+  check('节点总数处于合理预算内 (<930)', now < 930, '节点数 = ' + now);
   section('构造基线节点数 = ' + baselineNodes + '；压力后 = ' + now + '；新增 = ' + created);
   section('其中：toast 8 / 击杀播报 6 / 伤害数字 32 为固定池节点');
 }

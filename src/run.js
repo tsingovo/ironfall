@@ -100,8 +100,10 @@ export class Run {
       this.stats.damageDealt += p.damage;
     });
 
-    this._offDie = Events.on('player:die', () => {
-      this.stats.deaths++;
+    this._offDie = Events.on('player:die', (event = {}) => {
+      if (!event.pvp) this.stats.deaths++;
+      // Individual network deaths never settle or reset the shared expedition.
+      if (this.opts.isMultiplayer?.()) return;
       this.end(false);
     });
   }
@@ -226,7 +228,7 @@ export class Run {
         p._interactProgress = (p._interactProgress || 0);
         // destroy 必须用武器打坏实体；其余任务必须按住交互执行夺取/破坏/回收，
         // 不再只是走进圆圈站着等待读条。
-        if (p.state.grounded && o.type !== 'destroy' && this.objectiveInteractDown) {
+        if (p.alive && p.state.grounded && o.type !== 'destroy' && this.objectiveInteractDown) {
           const rate = 1 / Math.max(2.0, 6.5 - this.tier * 0.35);
           o.progress = M.clamp01(o.progress + dt * rate);
           if (o.progress >= 1) {

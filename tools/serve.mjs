@@ -6,6 +6,7 @@ import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createLocalRoomControl } from './local-room-control.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const PORT = Number(process.argv[2] || process.env.PORT || 8080);
@@ -38,7 +39,9 @@ function safeJoin(root, urlPath) {
   return full;
 }
 
+const control = createLocalRoomControl();
 const server = createServer(async (req, res) => {
+  if (await control.handle(req, res)) return;
   const started = Date.now();
   let status = 200;
   try {
@@ -87,7 +90,8 @@ server.listen(PORT, HOST, () => {
   process.stdout.write('按 Ctrl+C 停止\n');
 });
 
-process.on('SIGINT', () => {
+process.on('SIGINT', async () => {
+  await control.close();
   process.stdout.write('\n正在关闭…\n');
   server.close(() => process.exit(0));
 });

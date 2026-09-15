@@ -217,7 +217,8 @@ export class NetTransport {
     // 公网直连时很常见，必须重连。
     const fatal = code === 4000 || code === 4002;
     this.fatalCode = fatal ? code : 0;
-    this.lastError = reason || (fatal ? '被服务器拒绝' : '与服务器断开连接');
+    const prior = this.lastError;
+    this.lastError = `${reason || (fatal ? prior || '被服务器拒绝' : '与服务器断开连接')}（关闭码 ${code}，${this.url}）`;
     this._setStatus(NET_STATUS.RECONNECTING, this.lastError);
     // 首次连接还没成功就断开：让 connect() 的 Promise 以失败结束
     if (this._connectReject) {

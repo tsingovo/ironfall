@@ -191,7 +191,7 @@ class Game {
 
     // 导演与单局
     this.director = new Director(world, this.enemies, player, { particles: this.particles });
-    this.run = new Run(world, player, this.enemies, {});
+    this.run = new Run(world, player, this.enemies, { isMultiplayer: () => !!this.lan?.active });
     this.inventory.setGameplayContext({
       player,
       run: this.run,
@@ -219,6 +219,7 @@ class Game {
     this.lan = new LanSession(this);
     this.lan.onNotice = (title, sub, kind) => { if (this.hud) this.hud.toast(title, sub, kind); };
     this.lan.onSessionStart = (info) => this._onLanSessionStart(info);
+    this.lan.onRosterChange = () => this._pushLanHudState();
     this.lan.onChat = () => { this._pushLanHudState(); };
 
     // 点击画布 = 请求指针锁定 + 拉起音频。
@@ -410,7 +411,7 @@ class Game {
       else Audio.stopLoop('grapple_loop');
     });
     // 受伤仍有音效与 HUD 反馈，不再摇晃屏幕。
-    on('player:die', () => this._handleDeath());
+    on('player:die', (event) => this._handleDeath(event));
     // 敌人死亡不生成烟雾爆发，避免遮挡正在交火的后方目标。
     on('objective:progress', (p) => {
       if (this.hud) this.hud.setObjective(p.label, p.done, p.total);
@@ -591,6 +592,10 @@ class Game {
     // 不能再叠加网页全屏，否则 Esc 会被 Chromium 抢走并把窗口缩小。
     if (this.settings.autoFullscreen !== false) this.requestFullscreen();
 
+    this.player.pveDeaths = 0;
+    this.player.eliminated = false;
+    this._allLanFailed = false;
+    this._lanSpectating = false;
     this.paused = false;
     this.menuKind = null;
     this._respawnTimer = 0;
@@ -645,7 +650,7 @@ class Game {
       this.hud.toast(`第 ${this.tier} 层 · ${this.mapName}`, this.missionBrief(), 'info');
     }
     this._requestPointerLockWithRetry();
-    this._afterLanRunStart();
+    this._afterLanRunStart(true);
     return true;
   }
 
@@ -659,7 +664,7 @@ class Game {
    * `startRun()` 与 `retryRun()`：后者在房主阵亡重来时不该把全队拽回开局，
    * 只有战役推进到下一层（地图/种子变了）才需要重新下发。
    */
-  _afterLanRunStart() {
+  _afterLanRunStart(forceAnnounce = false) {
     const lan = this.lan;
     if (!lan || !lan.inSession || !lan.online) {
       if (lan) lan.applyRoleToWorld();
@@ -672,7 +677,7 @@ class Game {
       // 重复刷怪（spawnOpeningWave 有 _openingSpawned 保护），但会白白丢掉本帧状态。
       const prev = lan.sessionInfo;
       const changed = !prev || prev.seed !== this.mapSeed || prev.mapIndex !== this.mapIndex;
-      if (changed) {
+      if (changed || forceAnnounce) {
         lan.announceSession({
           mapIndex: this.mapIndex,
           seed: this.mapSeed,
@@ -885,7 +890,19 @@ class Game {
         if (this._playing) this.closeMenuPanel();
         else if (this.hud) this.hud.showMenu('main');
         break;
+      case 'lan_respawn':
+        this.respawnLan();
+        break;
+      case 'lan_spectate':
+        this.spectateLan();
+        break;
+      case 'lan_restart':
+        if (this._allLanFailed && this.lan?.isHost) {
+          this.startRun();
+        }
+        break;
       case 'quit_to_menu':
+        if (this.lan?.inSession) this.lan.leave();
         if (this.inventory) this.inventory.setOpen(false, this.player);
         this.setPlaying(false);
         this.paused = true;
@@ -1086,6 +1103,21 @@ class Game {
       if (this.hud) this.hud.toast('已经在房间里', '', 'info');
       return false;
     }
+    if (asHost) {
+      try {
+        const room = this.hud?.el?.['lan-room-name']?.value || 'default';
+        const r = await fetch('/__room/host', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room }) });
+        const result = await r.json();
+        if (!r.ok || result.error) throw new Error(result.error || '启动失败');
+        return await this._lanConnectTo(result.address);
+      } catch (e) {
+        this.hud?.toast('开房服务启动失败', e.message + '；请从新版“开始游戏”进入', 'warn');
+        return false;
+      }
+    }
+    const entered = this.hud?.el?.['lan-direct-input']?.value?.trim();
+    if (entered) return this._lanConnectTo(entered);
+    if (location.hostname === '127.0.0.1') return this._lanConnectTo('http://127.0.0.1:18200#' + (this.hud?.el?.['lan-room-name']?.value || 'default'));
     this._pushLanHudState();
     if (this.hud) this.hud.toast('正在连接局域网服务器…', this.lan._t.url, 'info');
     const name = this.settings.playerName || (asHost ? '房主' : '玩家');
@@ -1258,6 +1290,7 @@ class Game {
    * 打开菜单面板。游戏内菜单默认真正暂停并释放鼠标，行为与 Apex 一致。
    */
   openMenuPanel(kind, opts) {
+    if (this.lan?.active && !this.player.alive && !this._allLanFailed) kind = 'lan-dead';
     const o = opts || {};
     if (this.menuKind === kind) return false;
     if (this.inventory && this.inventory.open) this.inventory.setOpen(false, this.player);
@@ -1328,6 +1361,11 @@ class Game {
    */
   _handleGlobalKeys() {
     if (Input.actionPressed('pause')) {
+      if (this.lan?.active && !this.player.alive) {
+        if (this.menuKind === 'lan-dead' && !this._allLanFailed) this.spectateLan();
+        else this.openMenuPanel('lan-dead', { freeze: false });
+        return;
+      }
       // 背包优先消费 Esc：只关闭背包，不在其背后再打开设置菜单。
       if (this.inventory && this.inventory.open) {
         this.closeBackpack();
@@ -1369,6 +1407,7 @@ class Game {
    * 之前只弹了菜单、没有真正的重生入口，玩家会卡在死亡状态里出不去。
    */
   retryRun() {
+    if (this.lan?.active && !this.player.alive) return this.respawnLan();
     if (this._respawnTimer > 0 || !this.player) {
       // 正常路径
     }
@@ -1383,6 +1422,10 @@ class Game {
     }
     this._nextTier = 0;
     this.player.respawn(this.findSpawn());
+    this.player.pveDeaths = 0;
+    this.player.eliminated = false;
+    this._allLanFailed = false;
+    this._lanSpectating = false;
     this.player.health = this.player.maxHealth;
     this.player.shield = this.player.maxShield;
     this.enemies.clear();
@@ -1407,7 +1450,7 @@ class Game {
     this.setPlaying(true);
     Input.setMenuBlocking(false);
     this._requestPointerLockWithRetry();
-    this._afterLanRunStart();
+    this._afterLanRunStart(true);
   }
 
   /**
@@ -1603,7 +1646,8 @@ class Game {
   }
 
   /** 阵亡后的收尾：弹结算菜单 + 起倒计时自动重生 */
-  _handleDeath() {
+  _handleDeath(event = {}) {
+    if (this.lan?.active) return this._handleLanDeath(event);
     if (this._deadHandled) return;
     this._deadHandled = true;
     this._cancelHealingUse(false);
@@ -1626,6 +1670,86 @@ class Game {
     this._respawnTimer = 12;
   }
 
+  getLanDeathState() {
+    return { pveDeaths: this.player.pveDeaths || 0, eliminated: !!this.player.eliminated,
+      canRespawn: !this.player.alive && !this.player.eliminated && !this._allLanFailed,
+      allFailed: !!this._allLanFailed, isHost: !!this.lan?.isHost,
+      spectating: !!this._lanSpectating, targetName: this._lanSpectateTarget?.name || '' };
+  }
+
+  _handleLanDeath(event) {
+    if (this._deadHandled) return;
+    this._deadHandled = true;
+    if (!event.pvp) this.player.pveDeaths = (this.player.pveDeaths || 0) + 1;
+    this.player.eliminated = this.player.pveDeaths > 2;
+    this._cancelHealingUse(false);
+    this.player._releaseGrapple?.();
+    if (this.inventory) this.inventory.setOpen(false, this.player);
+    this._upgradeOpen = false;
+    this._respawnTimer = 0;
+    this.paused = false; // Host must keep AI/snapshots alive while dead.
+    this._lanSpectating = true;
+    this.menuKind = 'lan-dead';
+    this.setPlaying(false);
+    Input.setMenuBlocking(true);
+    Input.exitLock();
+    this.hud?.setLanDeathState?.(this.getLanDeathState());
+    this.hud?.showMenu('lan-dead');
+    this.hud?.toast(event.pvp ? '被玩家击杀' : '战斗阵亡',
+      event.pvp ? '不计失败次数，可重新部署' : `敌人 / 环境阵亡 ${this.player.pveDeaths}/3${this.player.eliminated ? ' · 本局仅可观战' : ' · 可重新部署'}`, 'warn');
+  }
+
+  respawnLan() {
+    if (!this.lan?.active || this.player.alive || this.player.eliminated || this._allLanFailed) return false;
+    // Preserve map, objective progress, enemies, inventory and death allowance.
+    this.player.respawn(this.findSpawn(this.localSpawnIndex()));
+    this.weapons.resetAmmo();
+    this._resetHealing();
+    this._deadHandled = false;
+    this._lanSpectating = false;
+    this._lanSpectateTarget = null;
+    this.paused = false;
+    this.menuKind = null;
+    this.setPlaying(true);
+    Input.setMenuBlocking(false);
+    this.hud?.hideMenu();
+    this._requestPointerLockWithRetry();
+    return true;
+  }
+
+  spectateLan() {
+    if (!this.lan?.active || this.player.alive || this._allLanFailed) return false;
+    this._lanSpectating = true;
+    this.menuKind = null;
+    this.paused = false;
+    this.setPlaying(true); // Esc opens the death / redeploy panel again.
+    this.hud?.hideMenu();
+    Input.setMenuBlocking(false);
+    this._requestPointerLockWithRetry();
+    return true;
+  }
+
+  _updateLanDeathState() {
+    if (!this.lan?.active) return;
+    const peers = this.lan.players || [];
+    this._lanSpectateTarget = this._lanSpectating ? peers.find(p => p.alive && !p.eliminated) || null : null;
+    if (!this._allLanFailed && this.player.eliminated && peers.every(p => p.eliminated)) {
+      this._allLanFailed = true;
+      this.director.stop();
+      this.menuKind = 'lan-dead';
+      this.setPlaying(false);
+      Input.setMenuBlocking(true);
+      Input.exitLock();
+      // Settle exactly once, only after everyone exhausts their PvE allowance.
+      this.run.end(false);
+      this.paused = false;
+      this._respawnTimer = 0;
+      this.menuKind = 'lan-dead';
+      this.hud?.showMenu('lan-dead');
+    }
+    this.hud?.setLanDeathState?.(this.getLanDeathState());
+  }
+
   frame(now) {
     if (!this.running) return;
     requestAnimationFrame(this._boundFrame);
@@ -1640,7 +1764,10 @@ class Game {
     // Esc 必须在 paused 早退之前处理，否则打开菜单后永远收不到第二次 Esc。
     this._handleGlobalKeys();
 
-    if (this.paused) {
+    if (this.lan) this.lan.update(dt);
+    this._updateLanDeathState();
+
+    if (this.paused && !(this.lan?.active && !['main', 'extract', 'dead'].includes(this.menuKind))) {
       // 暂停时仍然渲染（菜单背景），但不推进物理。
       // 同时同步 body 类名，让菜单期间恢复系统光标。
       this._syncMenuState();
@@ -1692,7 +1819,7 @@ class Game {
 
     // 联机会话每帧推进：发送自身状态、房主广播敌人快照、房客插值远程敌人。
     // 必须在物理步之前调用，让本帧的 enemies.update 用上最新的插值目标。
-    if (this.lan) this.lan.update(dt);
+    // Network update runs before pause/death handling above.
 
     // ---- 固定步物理
     // 视角增量按"本帧实际执行的物理步数"均摊，保证不同帧率下转头速度一致。
@@ -1793,6 +1920,13 @@ class Game {
   /** 单个固定物理步。input 的 lookX/lookY 已由调用方按步数均摊。 */
   stepPhysics(dt, input) {
     const p = this.player;
+    if (this.lan?.active && !p.alive) {
+      this.enemies.update(dt, p);
+      if (!this._lanGuest() && !this._allLanFailed) this.director.update(dt);
+      this.run.objectiveInteractDown = false;
+      if (!this._allLanFailed) this.run.update(dt, p);
+      return;
+    }
 
     // 可选：记录最近若干物理步的输入与状态，用于排查"某段序列之后手感异常"的问题。
     // 默认关闭，零开销（只多一次 null 判断）。
@@ -2001,7 +2135,17 @@ class Game {
     e.setSize(this.canvas.clientWidth || window.innerWidth,
       this.canvas.clientHeight || window.innerHeight, CFG.render.maxPixelRatio);
     e.beginFrame();
-    e.setCamera(p.eyePos, fwd, up, fov, CFG.render.near, CFG.render.far);
+    const spectator = this._lanSpectateTarget;
+    const cameraPos = spectator ? spectator.eyePos : p.eyePos;
+    if (spectator) {
+      const pitch = spectator.pitch || 0, yaw = spectator.yaw || 0;
+      fwd[0] = -Math.sin(yaw) * Math.cos(pitch);
+      fwd[1] = Math.sin(pitch);
+      fwd[2] = -Math.cos(yaw) * Math.cos(pitch);
+      buildUpFromForward(fwd, 0, up);
+    }
+    e.setCamera(cameraPos, fwd, up, fov, CFG.render.near, CFG.render.far);
+    this.hud?.setLanNameplates?.(this.lan?.nameplates?.() || [], e);
     void cp; void sy;
 
     // ---- 世界与敌人
@@ -2032,7 +2176,7 @@ class Game {
     e.flushAndReset();
 
     // ---- 武器视图模型（独立相机 + 独立深度）
-    w.render(e);
+    if (p.alive) w.render(e);
     e.endFrame();
 
     // ---- HUD

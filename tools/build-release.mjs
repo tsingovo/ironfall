@@ -116,6 +116,11 @@ const README_TXT = `IRONFALL · 钢铁远征  v${pkgVersion}
 
 需要：Windows 10/11、Chrome 或 Edge、WebGL2。首次补齐运行环境时需要联网，之后可离线。
 
+【游戏内联机】
+主菜单 → 局域网联机 → 创建房间，自动启动 18200 服务。
+房主填写完整 HTTP/HTTPS 穿透地址，按需选公开 .crt 证书，点击导出邀请发给朋友。
+朋友选择邀请 JSON，点击确认导入并连接。无需额外 CMD；穿透客户端仍需房主运行。
+
 【核心操作】
 WASD 移动；Shift 疾跑；Ctrl/C 滑铲；Space 跳跃/滑铲跳；左 Alt Dash；Q 抓钩
 鼠标左键开火；右键瞄准；R 换弹；1/2/3/4 切武器；B 哨兵整匣充能
@@ -160,24 +165,40 @@ async function main() {
     { name: '开始游戏.cmd', data: enc(launcher.toString('utf8')) },
     { name: 'IRONFALL.html', data: html },
     { name: 'index.html', data: html },
-    { name: '开始联机.cmd', data: enc(await readFile(join(ROOT, '开始联机.cmd'), 'utf8')) },
     { name: 'tools/lan-server.mjs', data: await readFile(join(ROOT, 'tools/lan-server.mjs')) },
     { name: '使用说明.txt', data: enc(README_TXT) },
     { name: 'LICENSE', data: license },
     { name: 'RELEASE_NOTES.md', data: releaseNotes },
     { name: 'tools/launch-app.mjs', data: launchApp },
     { name: 'tools/serve-single.mjs', data: serveSingle },
+    { name: 'tools/friend-bridge.mjs', data: await readFile(join(ROOT, 'tools/friend-bridge.mjs')) },
+    { name: 'tools/local-room-control.mjs', data: await readFile(join(ROOT, 'tools/local-room-control.mjs')) },
+    { name: 'tools/room-invite.mjs', data: await readFile(join(ROOT, 'tools/room-invite.mjs')) },
   ];
 
+  // Host-specific package: public certificate only; never include a private key.
+  const friend = process.argv.includes('--friend');
+  if (friend) {
+    files.push(
+      { name: 'tools/friend-server.crt', data: await readFile(join(DIST, 'friend-server.crt')) },
+      { name: 'tools/friend-server.json', data: await readFile(join(DIST, 'friend-server.json')) },
+      { name: '连接朋友房间.cmd', data: enc(launcher.toString('utf8').replace(
+        '"%NODE%" "%~dp0tools\\launch-app.mjs" --single "%~dp0IRONFALL.html"',
+        '"%NODE%" "%~dp0tools\\friend-bridge.mjs"')) },
+      { name: '朋友联机说明.txt', data: await readFile(join(DIST, 'FRIEND_README.txt')) },
+    );
+  }
+
   const zip = makeZip(files);
-  const out = join(DIST, `IRONFALL-${pkgVersion}-offline.zip`);
+  const out = join(DIST, `IRONFALL-${pkgVersion}-${friend ? 'friend' : 'offline'}.zip`);
   await writeFile(out, zip);
 
   const mb = (n) => (n / 1024 / 1024).toFixed(2) + ' MB';
   console.log(`IRONFALL 发布包 v${pkgVersion}`);
   for (const f of files) console.log(`  + ${f.name}  (${(f.data.length / 1024).toFixed(1)} KB)`);
-  console.log(`  产物: dist/IRONFALL-${pkgVersion}-offline.zip  (${mb(zip.length)})`);
-  console.log('  解压后双击「开始游戏.cmd」：自动备好运行环境 → 独立 App 窗口启动。');
+  console.log(`  产物: ${out}  (${mb(zip.length)})`);
+  console.log(friend ? '  朋友请双击「连接朋友房间.cmd」，进入大厅后加入房间，不填写公网地址。'
+    : '  解压后双击「开始游戏.cmd」：自动备好运行环境 → 独立 App 窗口启动。');
 }
 
 main().catch((e) => { console.error('打包失败:', e && e.message ? e.message : e); process.exit(1); });

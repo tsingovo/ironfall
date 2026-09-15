@@ -182,6 +182,8 @@ export class Player {
     // 远征内装甲板提供的独立护盾上限；不写进肉鸽 mods，避免下一次应用改件时丢失。
     this.armorShieldBonus = 0;
     this.alive = true;
+    this.pveDeaths = 0;
+    this.eliminated = false;
     this.invulnTime = 0;
     this._shieldRegenDelay = 0;
     this.shieldBroken = false;
@@ -1769,7 +1771,7 @@ export class Player {
         return amount;
       }
       this.alive = false;
-      Events.emit('player:die', {});
+      Events.emit('player:die', { source, pvp: source?.kind === 'player' });
       Events.emit('audio:play', { name: 'player_die' });
     }
     return amount;
