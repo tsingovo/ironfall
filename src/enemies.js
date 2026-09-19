@@ -1365,19 +1365,33 @@ export class EnemySystem {
    * 蜘蛛/飞行单位不参与（爆蛛本来就要贴墙爬，卡住是它的正常表现）。
    */
   _detectStuck(e, dt) {
-    // 这类兵种靠贴墙移动，不能按"卡住"处理
-    if (e.type.flying || e.type.meshKind === 'spider' || e.wallNormal || e.type.hybridBoss) {
+    // 这类兵种靠贴墙移动，不能按"卡住"处理。
+    // 但 BOSS 要区别对待：它**正在爬墙时**属于正常机动，不该判卡住；
+    // 一旦脱墙（wallNormal 为空）卡在平台与地面的缝隙里，就必须救出来 ——
+    // 早先把 hybridBoss 整个排除在外，结果 BOSS 卡缝隙时永远不会脱离。
+    if (e.type.flying || e.type.meshKind === 'spider') {
       e.stuckTime = 0;
       e.lastPos = null;
       return;
     }
+    if (e.wallNormal && (e.type.hybridBoss || e.wallJumpMode)) {
+      e.stuckTime = 0;
+      e.lastPos = null;
+      return;
+    }
+    const isBoss = !!e.type.hybridBoss;
     const lx = e.lastPos ? e.lastPos[0] : e.pos[0];
     const lz = e.lastPos ? e.lastPos[2] : e.pos[2];
     if (!e.lastPos) e.lastPos = [e.pos[0], e.pos[1], e.pos[2]];
     const moved = Math.hypot(e.pos[0] - lx, e.pos[2] - lz);
     const wants = Math.hypot(e.vel[0], e.vel[2]);
 
-    if (wants > 0.8 && moved < 0.02) {
+    // BOSS 体型大、在狭窄处本来就走得慢，阈值放宽一点，避免误判正常绕行。
+    const moveEps = isBoss ? 0.05 : 0.02;
+    const wantEps = isBoss ? 0.5 : 0.8;
+    const holdTime = isBoss ? 1.0 : 0.6;
+
+    if (wants > wantEps && moved < moveEps) {
       e.stuckTime = (e.stuckTime || 0) + dt;
     } else {
       e.stuckTime = 0;
@@ -1386,13 +1400,16 @@ export class EnemySystem {
     e.lastPos[1] = e.pos[1];
     e.lastPos[2] = e.pos[2];
 
-    if (e.stuckTime < 0.6) return;
+    if (e.stuckTime < holdTime) return;
 
-    // 阶段 1：上抬 + 侧向速度，靠引擎自己爬出来
+    // 阶段 1：上抬 + 侧向速度，靠引擎自己爬出来。
+    // BOSS 更容易被平台"压住"，给它更高的上抬速度，并且只给它两次机会
+    // （体型大、缝隙窄，硬蹭通常无效，早点进入瞬移阶段更好）。
     e.stuckTime = 0;
     e.stuckAttempts = (e.stuckAttempts || 0) + 1;
-    if (e.grounded || e.stuckAttempts <= 2) {
-      e.vel[1] = Math.max(e.vel[1], 6.5);
+    const liftChances = isBoss ? 2 : 3;
+    if (e.stuckAttempts <= liftChances) {
+      e.vel[1] = Math.max(e.vel[1], isBoss ? 9.5 : 6.5);
       const side = (e.id % 2 === 0) ? 1 : -1;
       // 注意：两个分量必须都基于**原始**速度算，否则先改 vel[0] 再拿它算 vel[2]
       // 会得到错误的方向（这里踩过一次）。
@@ -1404,26 +1421,65 @@ export class EnemySystem {
       return;
     }
 
-    // 阶段 2：挪到最近的可用导航点（避免永久卡死）。
-    // 只在反复失败后才用，且只找半径 12m 内的点，不会把它瞬移到玩家脸上。
+    // 阶段 2：挪到最近的**可用且确实能站**的导航点（避免永久卡死）。
+    //
+    // 落点必须同时满足三条，否则"瞬移"等于没救：
+    //   · 离当前位置足够远（BOSS 4m / 其它 2m）—— 否则选到脚下那个点，
+    //     下帧又卡在同一个缝里，来回弹
+    //   · 头顶有净空 —— 否则会从"地面缝"直接卡进"平台里"
+    //   · 脚下是地面 —— 否则会落到半空或虚空
     const cands = this.world.navCandidates ? this.world.navCandidates() : null;
+    const blocked = e.stuckBlocked || (e.stuckBlocked = []);
     if (cands && cands.length) {
-      let best = null, bestD = 12 * 12;
-      for (let i = 0; i < cands.length; i += 2) {
+      const radius = isBoss ? 30 : 14;
+      const minMove = isBoss ? 4.0 : 2.0;
+      let best = null, bestD = Infinity;
+      const steps = Math.max(1, Math.floor(cands.length / 512));   // 大表抽样，控制单帧开销
+      for (let i = 0; i < cands.length; i += steps) {
         const c = cands[i];
         const dx = c[0] - e.pos[0], dz = c[2] - e.pos[2];
         const d2 = dx * dx + dz * dz;
-        if (d2 < bestD) { bestD = d2; best = c; }
+        if (d2 > radius * radius) continue;
+        if (d2 < minMove * minMove) continue;                       // 太近，救不出来
+        if (d2 >= bestD) continue;
+        // 跳过最近尝试过、明显无效的点（避免反复选同一处来回弹）
+        let skip = false;
+        for (let k = 0; k < blocked.length; k++) {
+          const bp = blocked[k];
+          if ((c[0] - bp[0]) * (c[0] - bp[0]) + (c[2] - bp[2]) * (c[2] - bp[2]) < 4) { skip = true; break; }
+        }
+        if (skip) continue;
+        bestD = d2; best = c;
       }
       if (best) {
-        e.pos[0] = best[0];
-        e.pos[1] = best[1] + 0.1;
-        e.pos[2] = best[2];
-        e.vel[0] = 0; e.vel[1] = 0; e.vel[2] = 0;
-        e.stuckAttempts = 0;
-        return;
+        const y = best[1] + 0.15;
+        // 头顶净空
+        const upHit = this.world.raycast
+          ? this.world.raycast([best[0], y + 0.2, best[2]], [0, 1, 0], e.height + 0.5, {}).hit
+          : false;
+        // 脚下有地
+        const gy = this.world.groundHeight ? this.world.groundHeight(best[0], best[2]) : best[1];
+        const grounded = Number.isFinite(gy) && Math.abs(gy - best[1]) < 1.2;
+        if (!upHit && grounded) {
+          e.pos[0] = best[0];
+          e.pos[1] = y;
+          e.pos[2] = best[2];
+          e.vel[0] = 0; e.vel[1] = 0; e.vel[2] = 0;
+          e.stuckTime = 0;
+          e.stuckAttempts = 0;
+          // 记住这个落点：若下帧又卡住，换一个候选，避免在同一处来回弹
+          blocked.push([best[0], best[1], best[2]]);
+          if (blocked.length > 4) blocked.shift();
+          if (isBoss) {
+            // BOSS 脱困是玩家能看见的事件，给一条特效，避免"它怎么突然出现了"
+            this._specialFx('boss-summon', [e.pos[0], e.pos[1], e.pos[2]]);
+          }
+          return;
+        }
       }
     }
+    // 找不到合适落点：清空黑名单再试，并重置计数（下一轮重新评估）
+    if (blocked.length) blocked.length = 0;
     e.stuckAttempts = 0;
   }
 

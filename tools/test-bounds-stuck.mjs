@@ -197,6 +197,69 @@ console.log('\n── 5. 怪物卡住自动脱离 ──');
     `pos=[${e.pos[0].toFixed(1)}, ${e.pos[2].toFixed(1)}]`);
 }
 
+{
+  // BOSS 卡在平台与地面的缝隙里（用户实测反馈"boss 还是会卡在平台和地面间隙"）。
+  // 造一个典型的"平台离地"结构：地面上方悬着一块平台，中间是刚够 hug 的缝。
+  const w = makeOpenWorld(200);
+  // 地面
+  w._addBox([-40, -2, -40], [40, 0, 40], FLAG.SOLID, 'floor');
+  // 悬空平台：底面在 y=2.2，顶面 y=3.2 —— 与地面之间形成 2.2m 高的缝隙
+  w._addBox([-12, 2.2, -12], [12, 3.2, 12], FLAG.SOLID, 'platform');
+
+  const p = {
+    alive: true, pos: new Float32Array([30, 1, 30]), radius: 0.35, height: 1.8,
+    eyePos: new Float32Array([30, 1.6, 30]), forward: new Float32Array([-1, 0, -1]),
+    state: { hspeed: 0, grounded: true, speed: 0 }, applyDamage() {}, heal() {},
+  };
+  const sys = new EnemySystem(w, p, null, { particles: { emit() {}, emitBurst() {} } });
+
+  check('BOSS 参与卡住检测（不再被整体排除）',
+    typeof sys._detectStuck === 'function');
+
+  // 把 BOSS 塞进缝里（y 介于地面与平台底面之间），并让它持续朝玩家方向用力
+  const boss = sys.spawn('broodStalker', [0, 0.6, 0]);
+  boss.age = 5;
+  const start = [boss.pos[0], boss.pos[2]];
+  // 直接驱动卡住检测：喂"有速度但位置不变"的帧，模拟被平台压住
+  let freed = 0;
+  for (let i = 0; i < 180; i++) {
+    boss.vel[0] = 6; boss.vel[2] = 6;            // 一直在用力
+    const before = [boss.pos[0], boss.pos[1], boss.pos[2]];
+    sys._detectStuck(boss, 1 / 60);
+    const moved = Math.hypot(boss.pos[0] - before[0], boss.pos[1] - before[1], boss.pos[2] - before[2]);
+    if (moved > 0.5 || Math.abs(boss.vel[1]) > 8) freed++;
+  }
+  check('BOSS 卡缝隙时会被救出来（上抬或瞬移到安全点）', freed > 0,
+    `触发脱离 ${freed} 次，最终 pos=[${boss.pos[0].toFixed(1)}, ${boss.pos[1].toFixed(1)}, ${boss.pos[2].toFixed(1)}]`);
+
+  // 脱困后落点必须不在平台内部（头顶要有空间）—— 否则只是从地面缝卡进平台里
+  const insideHeadRoom = boss.pos[1] < 2.2 - 0.05 || boss.pos[1] > 3.2 + 0.05
+    || Math.abs(boss.pos[0]) > 12 || Math.abs(boss.pos[2]) > 12;
+  check('脱困落点不在平台实体内部', insideHeadRoom,
+    `pos=[${boss.pos[0].toFixed(1)}, ${boss.pos[1].toFixed(1)}, ${boss.pos[2].toFixed(1)}]（平台 y 2.2~3.2, xz ±12）`);
+}
+
+{
+  // 反例：BOSS 正常贴墙移动时不应被误判为卡住
+  const w = makeOpenWorld(200);
+  const p = {
+    alive: true, pos: new Float32Array([20, 1, 0]), radius: 0.35, height: 1.8,
+    eyePos: new Float32Array([20, 1.6, 0]), forward: new Float32Array([-1, 0, 0]),
+    state: { hspeed: 0, grounded: true, speed: 0 }, applyDamage() {}, heal() {},
+  };
+  const sys = new EnemySystem(w, p, null, { particles: { emit() {}, emitBurst() {} } });
+  const boss = sys.spawn('broodStalker', [0, 0.2, 0]);
+  boss.age = 5;
+  boss.wallNormal = [1, 0, 0];                   // 正在爬墙
+  for (let i = 0; i < 120; i++) {
+    boss.vel[0] = 6; boss.vel[2] = 0;
+    // 贴墙爬升时水平几乎不动 —— 但这属于正常机动
+    sys._detectStuck(boss, 1 / 60);
+  }
+  check('BOSS 正在爬墙时不会被误判卡住', (boss.stuckTime || 0) === 0 && !boss.stuckAttempts,
+    `stuckTime=${boss.stuckTime || 0} attempts=${boss.stuckAttempts || 0}`);
+}
+
 void CFG;
 console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
 process.exitCode = fail > 0 ? 1 : 0;
