@@ -121,11 +121,11 @@ async function probeServer(candidatePort = port) {
   const rootPage = await getText(`${base}/?standalone=1`);
   if (!rootPage.reachable) return { reachable: false, ironfall: false, currentBuild: false };
   const ironfall = rootPage.status === 200 && rootPage.text.includes('<title>IRONFALL');
-  let currentBuild = ironfall && rootPage.text.includes('IRONFALL // BUILD 2.1.1');
+  let currentBuild = ironfall && rootPage.text.includes('IRONFALL // BUILD 2.1.6');
   // 开发目录的 index.html 不内联 HUD，因此再检查源码；发布包的单文件在上一步即可识别。
   if (ironfall && !currentBuild) {
     const hudSource = await getText(`${base}/src/ui/hud.js`);
-    currentBuild = hudSource.status === 200 && hudSource.text.includes('IRONFALL // BUILD 2.1.1');
+    currentBuild = hudSource.status === 200 && hudSource.text.includes('IRONFALL // BUILD 2.1.6');
   }
   return { reachable: true, ironfall, currentBuild };
 }

@@ -16,16 +16,23 @@ for (const path of ['world', 'enemy', 'sky']) {
   w.player = { yaw: 0, pitch: 0, eyePos: [0,2,0], right:[1,0,0], up:[0,1,0], forward:[0,0,-1], state: { hspeed:0, grounded:true }, setAdsFovMul() {} };
   w.world = { raycast: () => ({ hit: path === 'world', t: 10, point:[0,2,-10], normal:[0,0,1] }) };
   w.enemies = { raycastEnemies: () => path === 'enemy' ? {t:5, enemy:{}, point:[0,2,-5], normal:[0,0,1]} : null, damage: (_e,d) => ({damage:d}) };
-  let tracers = 0, impacts = 0;
+  let tracers = 0, impacts = 0, shakes = 0;
+  const offShake = Events.on('fx:shake', () => shakes++);
   w.projectiles = { update() {}, spawnTracer() { tracers++; }, spawnMuzzleFlash() {} };
   w._updateViewmodel = () => {}; // GPU animation only; never stub firing or hit resolution.
   w._fireTimer = 0; w._triggerHeld = false; w._requireTriggerRelease = false;
   const off = Events.on('hit:world', e => { impacts++; assert.equal(e.damage, WEAPONS.r99.damage); });
-  for (let i=0; i<13; i++) w.update(1/128, {fire:true});
+  let peakAim = 0;
+  for (let i=0; i<13; i++) { w.update(1/128, {fire:true}); peakAim = Math.max(peakAim, w.recoil.aimPitch); }
   assert.equal(w.stats.shotsFired, 2, `${path}: 100ms must fire two shots, not empty the magazine`);
   assert.equal(st.ammo,22);
   assert.equal(tracers,2);
   assert.ok(w.recoil.patternIndex > 0);
+  assert.ok(w.recoil.visPitch > 0, 'camera recoil is retained');
+  assert.ok(peakAim > 0, 'aim recoil is retained');
+  assert.ok(w.vm.kick > 0, 'gun kick is retained');
+  assert.equal(shakes, 0, 'firing/hits must not emit screen shake');
+  offShake();
   assert.equal(impacts, path === 'world' ? 2 : 0);
   off();
   console.log(`PASS ${path}: full firing chain, 100ms / 2 shots / 22 remaining`);

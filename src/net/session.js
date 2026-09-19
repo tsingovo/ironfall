@@ -24,6 +24,9 @@ import { AvatarRenderer } from './avatar.js';
 
 export const LAN_ROLE = Object.freeze({ OFF: 'off', HOST: 'host', GUEST: 'guest' });
 
+const SPECIAL_PHASES = new Set(['approach', 'windup', 'retreat', 'charge']);
+const SPECIAL_FX_KINDS = new Set(['spider-charge', 'spider-explode', 'stalker-slash', 'boss-summon']);
+
 export const LAN_PHASE = Object.freeze({
   OFF: 'off',            // 未联机
   CONNECTING: 'connecting',
@@ -220,6 +223,11 @@ export class LanSession {
     this._sessionKey = null;
 
     this._eventOff = [
+      Events.on('enemy:special-fx', (fx) => {
+        if (!this.isHost || !this.active || !this.online || !validSpecialFx(fx)) return;
+        this._t.sendGame({ k: MSG.WORLD_EVENT, e: EV.ENEMY_SPECIAL_FX,
+          kind: fx.kind, pos: Array.from(fx.pos, q2) }, { reliable: true });
+      }),
       Events.on('weapon:fire', (shot) => {
         if (!this.active || !this.online || !shot?.origin || !shot?.dir) return;
         this._t.sendGame({ k: MSG.SHOT, o: shot.origin, e: shot.end, d: shot.dir,
@@ -709,6 +717,12 @@ export class LanSession {
     const game = this.game;
     if (!game) return;
     switch (data.e) {
+      case EV.ENEMY_SPECIAL_FX:
+        // Never emit enemy:special-fx here: guests only play effects, never AI/damage.
+        if (!this.isHost && this.active && from === this.hostId && validSpecialFx(data)) {
+          game.enemies?.playSpecialFx?.(data.kind, data.pos.slice());
+        }
+        break;
       case EV.ENEMY_DEATH: {
         // 本地已经通过快照知道敌人死了；这里只处理“击杀归谁”这一层：
         // 击杀者本机结算奖励与掉落，其他人只补一条播报。
@@ -776,6 +790,10 @@ export class LanSession {
       // 先写上限再写当前值：HUD 血条读的是 hp/maxHp，顺序反了会闪一帧 600%。
       if (Number.isFinite(row[9]) && row[9] > 0) e.maxHp = row[9];
       if (Number.isFinite(row[10]) && row[10] >= 0) e.maxShield = row[10];
+      e.specialPhase = SPECIAL_PHASES.has(row[12]) ? row[12] : 'approach';
+      e.specialTimer = boundedNumber(row[13], 60);
+      e.wallNormal = specialWallNormal(row[14]);
+      e.slashT = boundedNumber(row[15], 1);
       enemies.applyNetState(e, row[6], row[7], alive, undefined);
     }
     // 快照里已经不存在的敌人：直接退役，避免客户端留下“幽灵敌人”。
@@ -817,6 +835,9 @@ export class LanSession {
         e.id, slot, q2(e.pos[0]), q2(e.pos[1]), q2(e.pos[2]), q4(e.yaw),
         q1(e.hp), q1(e.shield), flags,
         q1(e.maxHp), q1(e.maxShield), q2(e.scale || 1),
+        SPECIAL_PHASES.has(e.specialPhase) ? e.specialPhase : 'approach',
+        q2(boundedNumber(e.specialTimer, 60)), specialWallNormal(e.wallNormal),
+        q2(boundedNumber(e.slashT, 1)),
       ]);
     }
     this._t.sendGame({ k: MSG.ENEMY, e: rows });
@@ -1095,6 +1116,17 @@ function sanitizeNameForUI(raw) {
 export default LanSession;
 
 function validVec(v) { return (Array.isArray(v) || ArrayBuffer.isView(v)) && v.length >= 3 && Array.from(v).slice(0, 3).every(Number.isFinite); }
+function boundedNumber(value, max) { return Number.isFinite(value) ? Math.max(0, Math.min(max, value)) : 0; }
+function specialWallNormal(value) {
+  if (!validVec(value) || value.length !== 3) return null;
+  const length = Math.hypot(value[0], value[1], value[2]);
+  if (!Number.isFinite(length) || length < 1e-6) return null;
+  return [q4(value[0] / length), q4(value[1] / length), q4(value[2] / length)];
+}
+function validSpecialFx(fx) {
+  return !!fx && SPECIAL_FX_KINDS.has(fx.kind) && validVec(fx.pos) && fx.pos.length === 3
+    && Array.from(fx.pos).every(v => Math.abs(v) <= 1e6);
+}
 function entryRoom() {
   try { return new URLSearchParams(location.search).get('room')?.replace(/[^\w\u4e00-\u9fa5-]/g, '').slice(0, 32) || 'default'; }
   catch { return 'default'; }

@@ -80,6 +80,7 @@ export class World {
     this._hazardSurfaceData = null;
     this._hazardBankData = null;
     this._supplyVisualData = null;
+    this._missionVisuals = [];
     this.importedVisuals = [];   // GLTF 导入的渲染网格
     this.importedCount = 0;
 
@@ -124,6 +125,7 @@ export class World {
     this._buildProps(mapData);
     this._collectPoints(mapData);
     this._buildSupplyVisuals();
+    this._buildMissionVisuals();
     this._buildNavCandidates();
     this.buildStaticMeshes();
     this.applyLighting(mapData.lighting);
@@ -139,6 +141,7 @@ export class World {
     this._hazardSurfaceData = null;
     this._hazardBankData = null;
     this._supplyVisualData = null;
+    this._missionVisuals.length = 0;
     for (const v of this.importedVisuals) this.engine.destroyMesh(v.mesh);
     this.importedVisuals.length = 0;
     this.importedCount = 0;
@@ -592,6 +595,34 @@ export class World {
     };
   }
 
+  /** 每个任务点/撤离点都有实体轮廓；不加移动碰撞，避免堵住原有交互站位。 */
+  _buildMissionVisuals() {
+    this._missionVisuals.length = 0;
+    const colors = {
+      destroy: [0.94, 0.24, 0.06, 1],
+      recover: [0.18, 0.72, 0.96, 1],
+      capture: [0.94, 0.66, 0.10, 1],
+      extract: [0.16, 0.86, 0.42, 1],
+    };
+    const add = (point, type) => {
+      const x = point.pos[0], y = point.pos[1], z = point.pos[2];
+      const matrix = new Float32Array(16);
+      // 1.4m 宽、1.8m 高，枪击命中点始终位于现有 destroy 伤害半径内。
+      M.m4Compose([x, y + 0.9, z], 0, 0, 0, [1.4, 1.8, 1.4], matrix);
+      const lightMatrix = new Float32Array(16);
+      M.m4Compose([x, y + 1.84, z], 0, 0, 0, [1.48, 0.12, 1.48], lightMatrix);
+      this._missionVisuals.push({
+        point, type, matrix, lightMatrix,
+        color: colors[type] || [0.74, 0.52, 0.96, 1],
+        min: new Float32Array([x - 0.7, y, z - 0.7]),
+        max: new Float32Array([x + 0.7, y + 1.8, z + 0.7]),
+      });
+    };
+    for (const o of this._objectives) add(o, o.type);
+    for (const e of this._extractPoints) add(e, 'extract');
+    // 补给站已由 _buildSupplyVisuals 提供模型，不能在这里重复创建。
+  }
+
   buildStaticMeshes() {
     // 静态盒体：单位立方体 + 实例矩阵缩放，合并为一次 draw call
     const n = this.boxes.length;
@@ -801,6 +832,13 @@ export class World {
         e.drawInstanced(mesh, g.matrices, g.count, { colors: g.colors });
       }
     }
+    for (const v of this._missionVisuals) {
+      const done = !!v.point.done;
+      e.drawMesh(this.meshes.cube, v.matrix, { color: done ? [0.22, 0.26, 0.28, 1] : v.color });
+      e.drawMesh(this.meshes.cube, v.lightMatrix, {
+        color: done ? [0.16, 0.22, 0.18, 1] : v.color, unlit: !done,
+      });
+    }
     for (const v of this.importedVisuals) {
       e.drawMesh(v.mesh, v.matrix, { color: v.color });
     }
@@ -876,7 +914,7 @@ export class World {
   // ================================================================ 碰撞查询
 
   /**
-   * 射线检测。返回 { hit, t, point, normal, kind:'box'|'tri', boxId, triIndex, flags }
+   * 射线检测。返回 { hit, t, point, normal, kind:'box'|'tri'|'objective', boxId, triIndex, flags }
    * opts: { maxDist, ignoreFlags, hitTriangles=true, hitBoxes=true }
    */
   raycast(origin, dir, maxDist, opts) {
@@ -906,6 +944,21 @@ export class World {
           res.kind = 'box';
           res.boxId = b.id;
           res.flags = b.flags;
+        }
+      }
+      // 摧毁目标使用与可见方块相同的 AABB 接收枪击，不改变玩家/AI 移动碰撞。
+      // 仍参与最近命中比较，墙体遮挡及 hitBoxes/ignoreFlags 语义保持一致。
+      for (const v of this._missionVisuals) {
+        if (v.type !== 'destroy' || (o.ignoreFlags & FLAG.BREAKABLE)) continue;
+        const hit = Col.rayAABB(origin, d, v.min, v.max);
+        if (hit && hit.t >= 0 && hit.t < bestT) {
+          bestT = hit.t;
+          res.hit = true;
+          res.t = hit.t;
+          res.normal.set(hit.normal);
+          res.kind = 'objective';
+          res.boxId = -1;
+          res.flags = FLAG.BREAKABLE;
         }
       }
     }

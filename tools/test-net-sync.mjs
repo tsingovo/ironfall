@@ -33,7 +33,7 @@ let tracers=0;guest.game.weapons.projectiles.spawnTracer=()=>tracers++;
 guest._onGameMessage('h',{k:MSG.SHOT,o:[0,1,-5],d:[0,0,-1],e:[0,1,-20],w:'sentinel'});assert.equal(tracers,1);
 // Real snapshot loop creates the missing enemy in the guest's replicated world.
 const all=[];guest.game.enemies={findByNetId:id=>all.find(e=>e.id===id),spawn(type,pos,opts){const e={id:opts.id,typeId:type,pos,yaw:0};all.push(e);return e},applyNetState(e,hp,shield,alive){Object.assign(e,{hp,shield,alive})},removeByNetId(){}};
-guest._onGameMessage('h',{k:MSG.ENEMY,e:[[7,0,1,0,3,0,100,75,1,100,75,1]]});
+guest._onGameMessage('h',{k:MSG.ENEMY,e:[[7,0,1,0,3,0,100,75,1,100,75,1,'approach',0,null,0]]});
 assert.equal(all[0].id,7);assert.equal(all[0].alive,true);
 for(const s of [host,guest])for(const off of s._eventOff)off();
 console.log('PASS: late join/session dedup, roster, enemy, equipment/grapple/nameplates, tracer, PvP validation/raycast');

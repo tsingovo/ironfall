@@ -73,6 +73,7 @@ export class Run {
 
   _wireEvents() {
     this._offKill = Events.on('enemy:die', (p) => {
+      if (p.byPlayer === false) return; // 自爆不伪装为玩家击杀/刷奖励
       if (this.phase !== RUN_PHASE.OBJECTIVES && this.phase !== RUN_PHASE.EXTRACT_READY
         && this.phase !== RUN_PHASE.EXTRACTING) return;
       this.kills++;

@@ -125,7 +125,52 @@ export class Director {
 
   _table() {
     const idx = Math.min(TIER_TABLES.length - 1, this.tier - 1);
-    return TIER_TABLES[idx];
+    const base = TIER_TABLES[idx];
+    const bossFloor = [3, 6, 10].includes(this.tier);
+    const total = Object.values(base).reduce((a,b)=>a+b,0);
+    // Boss 关两种新怪合计约 90% 权重；普通关合计约 29%，受原并发/预算保护。
+    return {...base, stalker: total * (bossFloor ? 4.5 : 0.2), blastSpider: total * (bossFloor ? 4.5 : 0.2)};
+  }
+
+  _updateBossSummons(dt) {
+    const boss=this._boss;
+    if(!boss?.alive || !boss.type.hybridBoss || this.enemies.replicated) return;
+    if(boss.summonCast>0) {
+      boss.summonCast-=dt;
+      if(boss.summonCast>0) return;
+      // 有限增援池，Boss 活着时才召唤；不覆盖/删除既有敌人来强行腾位。
+      let room=Math.min(4,this.concurrencyLimit-this.enemies.aliveCount());
+      const living=this.enemies.all.filter(e=>e.alive && e.summonerId===boss.id).length;
+      room=Math.min(room,6-living);
+      const candidates=this.world.navCandidates()||[];
+      let made=0;
+      for(const id of ['blastSpider','stalker','blastSpider','stalker']) {
+        if(made>=room) break;
+        let best=null,bestDistance=Infinity;
+        for(const pos of candidates) {
+          const distance=M.dist3(pos,boss.pos);
+          if(distance<5 || distance>35 || distance>=bestDistance || this._tooCloseToEnemy(pos,2)) continue;
+          // 不在任何玩家脚下召唤，也不在障碍物内部召唤。
+          if((this.enemies.players||[this.player]).some(p=>p?.alive && M.dist3(pos,p.pos)<12)) continue;
+          const type=ENEMY_TYPES[id],resolved=Array.from(pos);
+          this.world.resolveCapsule(resolved,type.radius,type.height,3);
+          if(M.dist3(resolved,pos)>0.4) continue;
+          best=resolved;bestDistance=distance;
+        }
+        if(!best) continue;
+        const minion=this.enemies.spawn(id,best,{});
+        minion.summonerId=boss.id;
+        this.enemies._specialFx('boss-summon',best);
+        made++;
+      }
+      boss.summonCooldown=8;
+      return;
+    }
+    boss.summonCooldown-=dt;
+    if(boss.summonCooldown<=0) {
+      boss.summonCast=0.9;
+      this.enemies._specialFx('boss-summon',boss.pos);
+    }
   }
 
   // ---------------------------------------------------------------- 更新
@@ -136,20 +181,22 @@ export class Director {
     this.phaseTime += dt;
     if (this.run.bossPending) {
       if (!this._boss) {
-        const pos = this._findSpawnPoint('heavy', true);
+        const pos = this._findSpawnPoint('broodStalker', true);
         if (pos) {
-          this._boss = this.enemies.spawn('heavy', pos, { elite: true, scale: 1.6 });
+          this._boss = this.enemies.spawn('broodStalker', pos, { elite: true, scale: 1.6 });
           this._bossId = this._boss.id;
-          this._boss.hp = this._boss.maxHp *= 5 + this.tier;
+          this._boss.maxHp = Math.round(this._boss.maxHp * (5 + this.tier) * (1 + Math.max(0, this.tier - 3) * 0.15));
+          this._boss.hp = this._boss.maxHp;
           this._boss.shield = this._boss.maxShield *= 3;
           Events.emit('audio:play', { name: 'boss_arrive' });
-          Events.emit('ui:message', { title: '守关首领：熔炉执政官', sub: '击败首领才能完成本层目标', kind: 'warn' });
+          Events.emit('ui:message', { title: '守关首领：绿影蛛皇', sub: '击败首领才能完成本层目标', kind: 'warn' });
         }
       } else if (!this._boss.alive || this._boss.id !== this._bossId) {
         this.run.bossPending = false;
         Events.emit('audio:play', { name: 'boss_defeat' });
         Events.emit('ui:message', { title: '首领已击败', sub: '完成剩余目标，结束本层远征', kind: 'good' });
       } else {
+        this._updateBossSummons(dt);
         this._bossPulse -= dt;
         if (this._bossPulse <= 0) {
           this._bossPulse = 8;
@@ -276,7 +323,8 @@ export class Director {
     const table = this._table();
     const ids = Object.keys(table);
     const weights = ids.map((k) => table[k]);
-    const concurrencyLeft = this.concurrencyLimit - this.aliveCount;
+    const summonReserve = this._boss?.alive && this._boss.type.hybridBoss ? 4 : 0;
+    const concurrencyLeft = this.concurrencyLimit - this.aliveCount - summonReserve;
     if (concurrencyLeft <= 0) {
       this.spawnCooldown = 0.8;
       return;
@@ -477,6 +525,8 @@ const THREAT_COST = {
   heavy: 3.2,
   sniper: 2.4,
   swarm: 0.7,
+  stalker: 1.4,
+  blastSpider: 1.0,
 };
 
 export default Director;

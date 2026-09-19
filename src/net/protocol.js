@@ -4,8 +4,8 @@
 // 符号表（武器 id、移动状态、敌人兵种）由调用方通过 createCodec() 注入，
 // 避免 net/* 反向依赖 weapons.js / enemies.js。
 
-export const NET_VERSION = '2';
-export const PROTOCOL_VERSION = 2;
+export const NET_VERSION = '4';
+export const PROTOCOL_VERSION = 4;
 
 /** 服务器的默认端口（与 tools/lan-server.mjs 的 DEFAULT_PORT 保持一致） */
 export const DEFAULT_SERVER_PORT = 18200;
@@ -175,6 +175,7 @@ export const EV = Object.freeze({
   ENEMY_SPAWN: 'spawn',
   ENEMY_DEATH: 'death',
   ENEMY_HIT: 'hit',
+  ENEMY_SPECIAL_FX: 'special-fx', // 房主 → 房客：特殊敌人的纯表现事件
   PLAYER_DEATH: 'pdeath',
   PLAYER_RESPAWN: 'prespawn',
   OBJECTIVE: 'obj',
@@ -335,12 +336,13 @@ export function createCodec(tables = {}) {
  *   0 id      1 兵种槽   2 x   3 y   4 z   5 yaw
  *   6 hp      7 shield   8 位标志
  *   9 maxHp  10 maxShield  11 scale
+ *  12 specialPhase  13 specialTimer  14 wallNormal (vec3/null)  15 slashT
  *
  * 后三项是 2.0.7 守关首领带来的：首领 `maxHp *= 5 + tier`、`maxShield *= 3`、
  * `scale = 1.6`。不同步上限，房客端血条会算成 600%；不同步 scale，房客看到的
  * 首领是普通体型、命中盒也跟着错。
  */
-export const ENEMY_TUPLE = 12;
+export const ENEMY_TUPLE = 16;
 
 /** 敌人位标志 */
 export const EFLAG = Object.freeze({

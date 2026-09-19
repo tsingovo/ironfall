@@ -1,7 +1,7 @@
 // ==== weapons.js — 武器与射击系统（R-99 手感为核心） ====
 // R-99 手感配方（逐条对应实现）：
 //   * 1080 RPM —— 每 55.6ms 一发，靠固定步内计时器补发，任何帧率都不丢射速
-//   * 双通道后坐力 —— recoilAim 真实推移准心（弹道会偏），recoilVisual 只推相机（有体感但不惩罚）
+//   * 平滑后坐力 —— 首发微量，连射阈值后加速，停火减速；弹道/相机使用同一瞄向
 //   * 固定弹道序列 —— 每发按 recoilPattern 走，越打越"上+左右摆"，可背弹道
 //   * 扩散累积 —— 连发时锥角变大，停火后衰减；移动/空中/跳跃进一步放大
 //   * 干脆的命中 —— 判定用即时射线（不延迟），曳光只做视觉
@@ -458,6 +458,7 @@ export const WEAPONS = {
     spreadDecay: 3.4,
     spreadMoveMul: 1.85, spreadAirMul: 2.5, spreadCrouchMul: 0.70, spreadSlideMul: 3.6,
     recoilPitch: 0.30, recoilYaw: 0.14,
+    recoilSpeedMul: 2.5, // 相对 2.1.4 的完整轨迹速度倍率，不改变射速/散布
     recoilPattern: R99_PATTERN,
     recoilRecovery: 7.8,
     recoilVisualMul: 1.75,
@@ -994,6 +995,10 @@ export class WeaponSystem {
     st.spread = def.hipSpreadBase;
     st.spreadExtra = 0;
     st.shotsFiredThisBurst = 0;
+    this._settleRecoil();
+    this.recoil.velocityPitch = this.recoil.velocityYaw = 0;
+    this.recoil.targetPitch = this.recoil.targetYaw = 0;
+    this.recoil.burstShots = 0; this.recoil.shotAge = Infinity;
     this.recoil.patternIndex = 0;
     this.recoil.aimPitch = 0; this.recoil.aimYaw = 0;
     this.recoil.visPitch = 0; this.recoil.visYaw = 0;
@@ -1125,8 +1130,8 @@ export class WeaponSystem {
       this.vm.equipT = Math.min(1, this.vm.equipT + dt / Math.max(0.05, def.equipTime * (W.switchSpeedMul || 1)));
     }
 
-    // 后坐力回落
-    this._updateRecoil(dt);
+    // 连续后坐速度积分，不在每次命中/开火时跳变角度。
+    this._updateRecoil(dt, input);
 
     // 扩散衰减
     st.timeSinceShot += dt;
@@ -1430,14 +1435,8 @@ export class WeaponSystem {
     }
     Events.emit('weapon:fire', { def, ammo: st.ammo, charged, origin: Array.from(muzzleWorld), dir: Array.from(baseDir), end: results[0]?.endPoint ? Array.from(results[0].endPoint) : null });
     Events.emit('audio:play', { name: def.fireSound, gain: 0.9 });
-    // 开火不再产生额外的随机屏幕震动；枪械本身的后坐/压枪仍正常保留。
-    // 想恢复抖动：把 CFG.fx.fireScreenShake 设为 true。
-    if (CFG.fx.fireScreenShake) {
-      Events.emit('fx:shake', {
-        amount: def.recoilPitch * 0.05 * (W.recoilMul || 1) * CFG.fx.screenShakeScale,
-        time: 0.06,
-      });
-    }
+    // 射击不发送随机屏幕震动；_applyRecoil 与枪体 kick 独立保留。
+    // 不触碰射击计时、命中、扣弹和后坐力计算。
     // 视图模型后坐
     this.vm.kick = Math.min(1.4, this.vm.kick + 0.55 * (W.recoilMul || 1));
     this.vm.kickRot = Math.min(0.5, this.vm.kickRot + 0.09 * (W.recoilMul || 1));
@@ -1584,7 +1583,6 @@ export class WeaponSystem {
       // 有甲目标时不会再把每一发都误报成肉体命中。
       // 命中反馈用命中标记（hitmarker）表达即可，不再叠加屏幕抖动 ——
       // 高射速武器下每发都抖会让画面一直在晃，玩家明确反馈要取消。
-      if (CFG.fx.fireScreenShake) Events.emit('fx:shake', { amount: 0.03, time: 0.05 });
     } else if (worldHit.hit) {
       res.endPoint = worldHit.point;
       res.dist = worldHit.t;
@@ -1673,55 +1671,78 @@ export class WeaponSystem {
     }
   }
 
-  /** 弹道序列后坐力 + 随机水平抖动 */
+  /** 开火只更新目标角速度；真实相机角度由每帧积分推进，不做逐发脉冲。 */
   _applyRecoil(def, st) {
-    const W = this.mods.weapon;
-    const mul = (W.recoilMul || 1);
-    const pat = def.recoilPattern;
-    const idx = Math.min(pat.length - 1, this.recoil.patternIndex);
-    const entry = pat[idx] || [0, def.recoilPitch];
-    this.recoil.patternIndex = Math.min(pat.length - 1, this.recoil.patternIndex + 1);
-
-    // 固定序列（度 -> 弧度）
-    const patYaw = M.toRad(entry[0] * 0.55 * mul);
-    const patPitch = M.toRad(entry[1] * mul);
-    // 随机抖动
-    const rndYaw = M.toRad((this.rng() - 0.5) * def.recoilYaw * 2 * mul);
-    const rndPitch = M.toRad((this.rng() - 0.5) * def.recoilPitch * 0.32 * mul);
-
-    const aimMul = def.recoilAimMul;
-    const visMul = def.recoilVisualMul;
-
-    if (CFG.fx.fireCameraRecoil !== false) {
-      this.recoil.aimPitch += (patPitch + rndPitch) * aimMul * (1 - st.adsT * 0.22);
-      this.recoil.aimYaw += (patYaw + rndYaw) * aimMul;
-      this.recoil.visPitch += (patPitch + rndPitch) * visMul;
-      this.recoil.visYaw += (patYaw + rndYaw) * visMul;
-    } else {
-      // 用户要求开火时镜头完全稳定。这里同时清掉影响真实射线的 aim 通道，
-      // 避免画面不动但子弹偷偷偏离准心；枪体 kick 和 spreadExtra 仍提供反馈。
-      this.recoil.aimPitch = 0; this.recoil.aimYaw = 0;
-      this.recoil.visPitch = 0; this.recoil.visYaw = 0;
+    const r = this.recoil, tune = CFG.recoil;
+    const mul = this.mods.weapon.recoilMul ?? 1;
+    if ((r.shotAge ?? Infinity) > tune.burstResetSeconds) {
+      r.burstShots = 0; r.patternIndex = 0;
     }
-    this.recoil.recoveryDelay = 0.055;
-
-    // 扩散累积
+    r.burstShots = (r.burstShots || 0) + 1;
+    r.shotAge = 0;
+    const pat = def.recoilPattern;
+    const entry = pat[Math.min(pat.length - 1, r.patternIndex)] || [0, def.recoilPitch];
+    r.patternIndex = Math.min(pat.length - 1, r.patternIndex + 1);
+    const ramp = M.smoothstep(0, 1, M.clamp01((r.burstShots - tune.startShots + 1) / tune.rampShots));
+    const automatic = !['sniper', 'shotgun', 'melee'].includes(def.class);
+    // 专注专属渐强配置预留；现有连射枪直接使用各自满强度上抬速度。
+    r.constantSpeed = automatic && def.recoilProfile !== 'devotion-ramp';
+    r.singlePulse = !automatic;
+    const strength = r.constantSpeed ? 1 : M.lerp(tune.singleShotScale, 1, ramp);
+    const enabled = CFG.fx.fireCameraRecoil !== false && def.class !== 'melee';
+    const speed = Math.min(tune.maxPitchSpeedDeg, def.recoilPitch * def.recoilVisualMul * 8)
+      * (def.recoilSpeedMul ?? 1); // 武器倍率在基础限速之后，保证精确倍率
+    r.targetPitch = enabled ? M.toRad(speed * strength * mul * (1 - st.adsT * 0.22)) : 0;
+    // 保留可学习的横向弹道走向，但不再附加每发随机镜头震颤。
+    r.targetYaw = enabled ? r.targetPitch * M.clamp(entry[0] / Math.max(0.05, entry[1]), -0.45, 0.45) : 0;
+    r.driveSeconds = automatic ? Math.max(0.07, this._fireInterval(def) * 1.5) : 0.065;
     st.spreadExtra = Math.min(def.spreadMax, st.spreadExtra + def.spreadPerShot * mul);
   }
 
-  _updateRecoil(dt) {
-    const def = WEAPONS[this.slots[this.slotIndex].id];
-    this.recoil.recoveryDelay = Math.max(0, this.recoil.recoveryDelay - dt);
-    const rate = def.recoilRecovery * dt;
-    // 瞄准偏移恢复
-    this.recoil.aimPitch = M.moveTowards(this.recoil.aimPitch, 0, rate * 0.55);
-    this.recoil.aimYaw = M.moveTowards(this.recoil.aimYaw, 0, rate * 0.55);
-    // 视觉偏移恢复更快（相机抖动迅速归位，但仍有冲击感）
-    this.recoil.visPitch = M.damp(this.recoil.visPitch, 0, 9.5, dt);
-    this.recoil.visYaw = M.damp(this.recoil.visYaw, 0, 9.5, dt);
-    if (this.recoil.recoveryDelay <= 0 && this.state.get(def.id).timeSinceShot > 0.22) {
-      // 停火一段时间后重置弹道序列（下次开火从第一发开始）
-      if (this.state.get(def.id).timeSinceShot > 0.5) this.recoil.patternIndex = 0;
+  _settleRecoil() {
+    const r = this.recoil;
+    // 停稳后将最终瞄向交回鼠标基准：视觉方向不变，不向下回弹，也不累积隐藏偏移。
+    //
+    // 注意：WeaponSystem 允许在没有 player 的情况下构造（自测、纯数据校验都这么用），
+    // 所以这里必须判空，否则 _equip() → _settleRecoil() 会直接抛
+    // "Cannot read properties of undefined (reading 'pitch')"。
+    if (this.player) {
+      this.player.pitch = M.clamp(this.player.pitch + r.visPitch, -CFG.cam.pitchLimit, CFG.cam.pitchLimit);
+      this.player.yaw = M.wrapAngle(this.player.yaw + r.visYaw);
+    }
+    r.aimPitch = r.aimYaw = r.visPitch = r.visYaw = 0;
+  }
+
+  _updateRecoil(dt, input = {}) {
+    const r = this.recoil, tune = CFG.recoil;
+    const st = this.state.get(this.slots[this.slotIndex].id);
+    let age = r.shotAge ?? Infinity;
+    let remaining = Math.max(0, dt);
+    const canDrive = CFG.fx.fireCameraRecoil !== false && !st.reloading && !st.charging
+      && (input.fire || r.singlePulse);
+    // 在驱动力结束时精确分段，避免不同帧率改变单发总上抬量。
+    while (remaining > 1e-8) {
+      const driving = canDrive && age < (r.driveSeconds || 0);
+      const step = driving ? Math.min(remaining, r.driveSeconds - age) : remaining;
+      const rate = driving ? tune.acceleration : tune.braking;
+      const decay = Math.exp(-rate * step);
+      for (const [axis, angle] of [['Pitch', 'visPitch'], ['Yaw', 'visYaw']]) {
+        const target = driving ? r['target' + axis] || 0 : 0;
+        // 恒速只改变导数，不逐发跳角度；横向转折仍用连续速度过渡。
+        const velocity = driving && r.constantSpeed && axis === 'Pitch'
+          ? target : r['velocity' + axis] || 0;
+        r[angle] += target * step + (velocity - target) * (1 - decay) / rate;
+        r['velocity' + axis] = target + (velocity - target) * decay;
+      }
+      age += step; remaining -= step;
+    }
+    r.shotAge = age;
+    // 所有消费者拿到同一角度，弹道始终跟随屏幕中心。
+    r.aimPitch = r.visPitch; r.aimYaw = r.visYaw;
+    if (age > tune.burstResetSeconds && Math.abs(r.velocityPitch || 0) + Math.abs(r.velocityYaw || 0) < 1e-5) {
+      this._settleRecoil();
+      r.velocityPitch = r.velocityYaw = r.targetPitch = r.targetYaw = 0;
+      r.burstShots = r.patternIndex = 0;
     }
   }
 
@@ -1892,6 +1913,10 @@ export class WeaponSystem {
     const holsterEase = M.clamp01(vm.holsterT / 0.3);
     targetPos[1] -= holsterEase * 0.26;
     targetRot[0] += holsterEase * 1.0;
+
+    // 腰射低持枪：在全部运动姿态之后统一下移，避免跳跃/滑铲又把枪抬回中心。
+    // 开镜时平滑恢复瞄具对齐；不移动近战、治疗道具或世界相机。
+    if (def.class !== 'melee') targetPos[1] -= CFG.render.weaponLowering * (1 - st.adsT);
 
     // 平滑到目标
     vm.pos[0] = M.damp(vm.pos[0], targetPos[0], 16, dt);

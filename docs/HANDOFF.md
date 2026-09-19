@@ -265,3 +265,36 @@ docs/CONTRACTS.md           跨模块接口契约
 - 已验证：local-room-control、room-invite、tunnel-regression、net-sync、lan-combat、HUD 189/189、launch-version；解压实际发布包后启动 serve-single 并检查 BUILD/API 成功；ZIP 只有一个 CMD。未执行真实 GUI 或双机游玩，用户自行测试。
 - 本地产物 release/IRONFALL-2.1.1-offline.zip，SHA256 9D10A4B0E132993AA3AE035C282375B423572E225C2A6ED08E8DCE905CDE7419。未 push、未发布。
 - 保留所有未提交的 2.1.0 联机修改。后续关注真实多人体验与重新打开旧后台服务的生命周期；不要随意终止用户运行中的服务器。
+
+## 2026-09-19 视野调整 2.1.2（本地未推送）
+- 腰射及运动姿态枪体统一下移 0.18，ADS 按权重恢复以保持瞄具对齐，近战/治疗不动。
+- 移除 weapon fire/hit 的 fx:shake 发射，不改变 _applyRecoil、射击定时、扣弹与伤害。
+- test-fire-paths：打墙/敌人/天空 100ms 两发，22 发剩余，后坐力仍存在，无震动事件；test-weapon-lowering 全枪全姿态通过；启动版本检查通过。
+- BUILD 更新为 2.1.2，避免复用旧发布包页面。完整视觉体验待用户测试。
+
+## 2026-09-19 平滑后坐 2.1.3（本地未推送）
+- 用户希望首发极小、连续射击越过阈值后加速上抬，停火减速至 0。_applyRecoil 只设目标角速度，_updateRecoil 指数解析积分速度和位移，不每发跳角度。
+- CFG.recoil 集中参数：startShots=3、rampShots=7、singleShotScale=.035、acceleration=9、braking=22、burstResetSeconds=.30、maxPitchSpeedDeg=7。
+- 停稳后将偏移转入 player.pitch/yaw，视觉连续且不反向回弹；切枪同样转移而非突兀归零。鼠标压枪保留。实际命中与相机仍共用 visPitch/visYaw。
+- test-smooth-recoil 覆盖首发、阈值爬升、无瞬跳、松手减速、停稳无漂移、30/60/144 FPS、无真实开火不持续驱动；test-fire-paths、weapon-lowering、loot-weapons 29/29、net-sync 通过。
+- 此改动未动射击定时/扣弹/伤害；真实游戏手感由用户测试。2.1.2 及本次代码均未提交/推送。
+
+## 2026-09-19 恒速连射后坐 2.1.4（本地未推送）
+- R99/平行/电能 constantSpeed=true，无发数阈值，驱动期间 pitch 速度即各自满强度速度；只积分角度不瞬跳，横向仍平滑沿轨迹。
+- 停火按 braking 减速；单发狙/霰弹保留微量短脉冲。recoilProfile='devotion-ramp' 专属渐强配置已保留，但仓库无专注武器，未擅自新增。
+- test-smooth-recoil 已覆盖三把连射枪恒速、专属渐强配置保留及已有单发/制动/FPS 测试；fire-paths 保持 100ms 两发 22 剩余。
+
+## 2026-09-19 R99 后坐倍率 2.1.5（未推送）
+- R99 recoilSpeedMul=2.5，在原基础限速之后乘倍率，腰射 4.2→10.5 度/秒，横向同倍率；ADS/配件既有乘数不变。其他枪默认为 1。
+- test-smooth-recoil 新增腰射/ADS 精确 2.5 倍与其他枪不变断言。
+
+## 2026-09-19 新敌人 2.1.6（未提交/推送）
+- ENEMY_IDS 末尾追加 stalker / blastSpider，不替换旧类型；独立 hitrun/bomber 行为，不走通用枪手攻击。
+- stalker 18m/s，.22秒挥刀前摇，基础50伤（不乘全局伤害倍率）；每次挥刀后必须距原目标超过60m再进入approach。绕障探测+实体碰撞，绿色限频尾迹。
+- blastSpider 八足双节模型，接墙才贴壁关闭重力，法向贴附/切向爬升+原sweep/resolve。新增二次切向扫掠避免贴墙t=0卡住。近距蓄力1.1秒，5m范围50基础伤害，LOS墙遮挡；被杀取消爆炸，自爆不给击杀收益。
+- 新怪在普通关选择权重合计约28.6%，boss层3/6/10合计90%；预算/并发上限未放开。
+- 协议升级3，ENEMY_TUPLE=16，specialPhase/timer/wallNormal/slashT同步；host-only可靠special FX，房客仅播放不结算伤害。独立子代理仅改net模块和测试，已集成检查。
+- 检查：special-enemies（含真实World 5m墙爬升+实体模型矩阵）、net-special-enemies、net-sync、lan-combat、grapple6/6、HUD189/189、audio222/222、fire-paths、smooth-recoil均通过。音频测试曾因新音效改变随机序列，在旧增益抖动断言失败；对照HEAD音频220/220通过，已按声明±8%增益波动校正测试上限，未改实际混音音量。
+- 无GUI/双机实玩，遵照用户由其自行验收。发布包release/IRONFALL-2.1.6-offline.zip，本次及此前今日后坐修改均未推送。
+
+- 收尾：main.js 排除自爆的玩家击杀广播；新增目标死亡后蜘蛛引信继续且不伤害死者测试，全部专项回归通过；重新打包并验证 ZIP 单入口、运行依赖、新怪代码及协议3均存在。

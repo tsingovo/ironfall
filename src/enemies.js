@@ -107,6 +107,30 @@ export const ENEMY_TYPES = {
     attackRange: 2.9, preferredRange: 1.9, strafe: false,
     swarm: true,
   },
+  stalker: {
+    id: 'stalker', name: '绿影', nameCN: '绿影突袭者',
+    hp: 100, shield: 100, speed: 18, accel: 60, radius: 0.4, height: 1.8,
+    color: [0.08, 0.85, 0.22], accentColor: [0.35, 1, 0.55],
+    score: 180, alloy: 5, xp: 3, threat: 1.4,
+    weapon: {damage: 50, melee: true}, behavior: 'hitrun', meshKind: 'humanoid',
+    attackRange: 2.7, preferredRange: 2, retreatDistance: 60, windup: 0.22,
+  },
+  blastSpider: {
+    id: 'blastSpider', name: '爆蛛', nameCN: '爬墙自爆蛛',
+    hp: 100, shield: 100, speed: 8, accel: 38, radius: 0.42, height: 0.9,
+    color: [0.20, 0.13, 0.10], accentColor: [1, 0.35, 0.06],
+    score: 100, alloy: 3, xp: 2, threat: 1.0,
+    weapon: {damage: 50, melee: true}, behavior: 'bomber', meshKind: 'spider',
+    attackRange: 3.2, preferredRange: 2.5, chargeTime: 1.1, blastRadius: 5,
+  },
+  broodStalker: {
+    id:'broodStalker', name:'绿影蛛皇', nameCN:'绿影蛛皇',
+    hp:100, shield:100, speed:18, accel:60, radius:0.65, height:2.35,
+    color:[0.06,0.66,0.17], accentColor:[0.45,1,0.24],
+    score:1500, alloy:30, xp:12, threat:6, elite:true, hybridBoss:true,
+    weapon:{damage:50,melee:true}, behavior:'hitrun', meshKind:'hybrid',
+    attackRange:3.5, preferredRange:2, retreatDistance:60, windup:0.22,
+  },
 };
 
 export const ENEMY_IDS = Object.keys(ENEMY_TYPES);
@@ -282,6 +306,12 @@ export class EnemySystem {
     e.lastPos = e.lastPos || new Float32Array(3);
     e.lastPos[0] = e.pos[0]; e.lastPos[1] = e.pos[1]; e.lastPos[2] = e.pos[2];
     e.meleeCooldown = 0;
+    e.specialPhase = 'approach'; e.specialTimer = 0; e.slashT = 0;
+    e.wallJumpCooldown=2; e.wallJumpTimer=0; e.wallJumpMode=''; e.wallJumpNormal=null;
+    e.summonCooldown=6; e.summonCast=0; e.summonerId=null;
+    e.wallNormal = null; e.specialTarget = null; e.trailTimer = 0;
+    e.specialLastPos = Array.from(e.pos);
+    e.grounded = false;
     e.bobPhase = this.rng() * 6.28;
     e.statusBleed = 0; e.statusBleedDmg = 0; e.statusBleedTime = 0;
     e.statusSlow = 0; e.statusSlowTime = 0;
@@ -330,12 +360,15 @@ export class EnemySystem {
       if (e.gunRecoil > 0) e.gunRecoil -= dt * 6;
       // 房客：位置/朝向/血量完全由房主快照驱动（net/session.js 每帧插值写入），
       // 这里只推进表现层计时，绝不跑 AI、物理或抓钩牵引。
-      if (this.replicated) continue;
+      if (this.replicated) { this._specialPresentation(e, dt); continue; }
       this._updateStatus(e, dt);
+      if (!e.alive) continue;
       const target = multi ? this._selectTarget(e) : p;
       this._updateAI(e, dt, target);
+      if (e.alive && e.type.hybridBoss) this._bossWallMovement(e,dt,e.specialTarget?.alive ? e.specialTarget : target);
       const grappleMaxSpeed = this._applyGrapplePull(e, dt, target);
-      this._physics(e, dt, grappleMaxSpeed);
+      if (e.alive) this._physics(e, dt, grappleMaxSpeed);
+      this._specialPresentation(e, dt);
       if (e.grapplePull) e.grapplePull.pending = false;
     }
     // 清理死亡超时的敌人
@@ -430,6 +463,9 @@ export class EnemySystem {
 
   _updateAI(e, dt, player) {
     const type = e.type;
+    if (type.behavior === 'hitrun' || type.behavior === 'bomber') {
+      this._updateSpecialAI(e, dt, player); return;
+    }
     if (!player || !player.alive) { e.state = AI_IDLE; this._moveIdle(e, dt); return; }
 
     const dx = player.pos[0] - e.pos[0];
@@ -515,6 +551,308 @@ export class EnemySystem {
     const noisy = player.state.speed > 11 || player.state.wallRunning || player.state.sliding;
     const radius = noisy ? 26 : 12;
     return dist < radius;
+  }
+
+  _updateSpecialAI(e, dt, player) {
+    const type = e.type;
+    // 蓄力一旦开始就有独立引信，目标死亡或离开不会暂停倒计时。
+    if (type.behavior === 'bomber' && e.specialPhase === 'charge') {
+      e.vel[0] = e.vel[1] = e.vel[2] = 0;
+      e.specialTimer -= dt;
+      if (e.specialTimer <= 0) this._detonateSpider(e);
+      return;
+    }
+    if (e.specialTarget?.alive && e.specialPhase !== 'approach') player = e.specialTarget;
+    if (!player?.alive) { this._moveIdle(e, dt); return; }
+    const distance = M.dist3(e.pos, player.pos);
+    const yaw = Math.atan2(e.pos[0]-player.pos[0], e.pos[2]-player.pos[2]);
+    e.state = AI_ENGAGE;
+    if (type.behavior === 'hitrun') {
+      if (e.specialPhase === 'retreat') {
+        if (distance > type.retreatDistance) {
+          e.specialPhase = 'approach'; e.specialTarget = null;
+        } else {
+          this._moveAway(e, player.pos, dt, 1);
+          this._steerSpecial(e, dt);
+          this._faceTowards(e, Math.atan2(-e.vel[0],-e.vel[2]), dt, 14);
+          return;
+        }
+      }
+      if (e.specialPhase === 'windup') {
+        e.vel[0] = M.damp(e.vel[0],0,30,dt); e.vel[2] = M.damp(e.vel[2],0,30,dt);
+        e.specialTimer -= dt;
+        this._faceTowards(e, yaw, dt, 16);
+        if (e.specialTimer <= 0) {
+          e.slashT = 1;
+          this._specialFx('stalker-slash', e.pos);
+          if (distance <= type.attackRange + 0.4 && this._hasLineOfSight(e,player,distance)) {
+            this._specialDamage(e, player, type.weapon.damage);
+          }
+          // 命中或挥空都只砍一次，必须先跑到 60m 之外才可再接近。
+          e.specialPhase = 'retreat'; e.specialTarget = player;
+        }
+        return;
+      }
+      if (distance <= type.attackRange && e.age >= e.spawnAttackLock && this._hasLineOfSight(e,player,distance)) {
+        e.specialPhase = 'windup'; e.specialTimer = type.windup; e.specialTarget = player;
+        return;
+      }
+      // 接近玩家：不走直线，而是"边推进边不规律左右摆动"（总速度保持 type.speed）。
+      // 详见 _moveApproachWeave 的注释。
+      this._moveApproachWeave(e, dt, player);
+      this._steerSpecial(e,dt);
+      // 朝向仍面向实际移动方向，视觉上才像"扑过来"而不是横着平移
+      this._faceTowards(e, Math.atan2(-e.vel[0],-e.vel[2]), dt, 14);
+      return;
+    }
+    if (distance <= type.attackRange && e.age >= e.spawnAttackLock && this._hasLineOfSight(e,player,distance)) {
+      e.specialPhase = 'charge'; e.specialTimer = type.chargeTime; e.specialTarget = player;
+      e.vel.fill(0);
+      this._specialFx('spider-charge',e.pos);
+      return;
+    }
+    this._moveToward(e, player.pos, dt, 1);
+    this._faceTowards(e,yaw,dt,10);
+    this._spiderClimb(e,player);
+  }
+
+  /**
+   * 绿影 / 绿影蛛皇 的接近移动：**不直勾勾冲向玩家**，而是边推进边不规律左右摆动。
+   *
+   * 设计要点（改之前先读）：
+   *  · **总速度恒定**：先把"朝向玩家的单位向量"与"侧向单位向量"合成，
+   *    再整体缩放到 `type.speed`（绿影 = 18 m/s）。所以摆动不会让它变慢或变快，
+   *    只是在同样速度下走出蛇形轨迹。
+   *  · **不规律**：三个不同频率的正弦叠加（低频决定大方向偏移、中频做主要摆动、
+   *    高频抖动细节），每个个体的相位与频率由稳定哈希决定，因此同一只怪行为可复现，
+   *    不同个体又互不相同 —— 比纯随机更像"有生命"，也不会出现全体同步摆动。
+   *  · **摆动量随距离收敛**：远距离摆幅大（横向包抄、难以预判），
+   *    进入攻击距离前迅速收敛为直线，保证该打到的时候打得到。
+   *  · **撞墙修正**：摆动容易蹭到掩体，这里做一个短距离探针，撞上就把侧向分量反向。
+   */
+  _moveApproachWeave(e, dt, player) {
+    const type = e.type;
+    const dx = player.pos[0] - e.pos[0];
+    const dz = player.pos[2] - e.pos[2];
+    const dist = Math.hypot(dx, dz) || 1;
+    const fx = dx / dist, fz = dz / dist;          // 朝向玩家
+    const sx = -fz, sz = fx;                       // 侧向（右手）
+
+    // 每只怪一份稳定的相位/频率（首次使用时惰性生成）
+    if (e.weaveSeed === undefined) {
+      // 只用 e.id：它是稳定的每实例标识，同一只怪每次运行行为一致（可复现），
+      // 不同个体之间相位/频率不同（不会全体同步摆动）。
+      const h = (e.id * 2654435761) >>> 0;
+      const r = (n) => ((h >>> (n * 5)) & 1023) / 1023;
+      e.weaveSeed = h;
+      e.weavePhaseA = r(0) * Math.PI * 2;
+      e.weavePhaseB = r(1) * Math.PI * 2;
+      e.weavePhaseC = r(2) * Math.PI * 2;
+      e.weaveFreqA = 0.42 + r(3) * 0.30;           // 低频：整体漂移，慢速换边
+      e.weaveFreqB = 1.90 + r(4) * 1.30;           // 中频：主要的左右摆动
+      e.weaveFreqC = 4.10 + r(5) * 2.40;           // 高频：细微抖动，破除规律感
+      e.weaveSign = r(6) < 0.5 ? -1 : 1;           // 起始偏向
+    }
+    const t = this._time;
+
+    // 三频叠加 → 侧向偏移系数，范围约 [-1.15, 1.15]
+    const wob =
+      0.30 * Math.sin(t * e.weaveFreqA * 2.0 + e.weavePhaseA) +
+      0.72 * Math.sin(t * e.weaveFreqB * 2.0 + e.weavePhaseB) +
+      0.22 * Math.sin(t * e.weaveFreqC * 2.0 + e.weavePhaseC);
+
+    // 摆幅：远距离最大，贴近时收敛为直线（保证该打中时打得到）
+    //
+    // 基准值 0.45 是实测调出来的：扫过 0.85/0.70/0.55/0.45/0.35 后，
+    // 横向速度占总速度的平均比例分别是 30%/25%/22%/18%/15%（峰值 67%/46%/53%/44%/40%）。
+    // 0.85 时绿影平均三成速度花在横移上，观感是"蟹行"而不是"扑过来"；
+    // 0.45 既保留了明显的不可预判性（峰值仍有 44%），又保证它是真的在接近。
+    // 想让某个兵种摆得更凶/更稳，在 ENEMY_TYPES 里给它加 weaveAmp 即可（0 = 走直线）。
+    const nearRamp = M.clamp01((dist - type.attackRange) / 7.0);
+    const amp = (type.weaveAmp == null ? 0.45 : type.weaveAmp) * nearRamp;
+
+    // 合成方向并归一化 —— 这一步保证"总速度"不变
+    let bx = fx + sx * wob * amp * e.weaveSign;
+    let bz = fz + sz * wob * amp * e.weaveSign;
+    const bl = Math.hypot(bx, bz) || 1;
+    bx /= bl; bz /= bl;
+
+    // 前方短探针：摆动蹭墙时把侧向分量反向，避免贴着掩体原地磨
+    const origin = [e.pos[0], e.pos[1] + e.height * 0.5, e.pos[2]];
+    if (this.world.raycast(origin, [bx, 0, bz], e.radius + 1.1, {}).hit) {
+      e.weaveSign = -e.weaveSign;
+      bx = fx - sx * wob * amp * e.weaveSign;
+      bz = fz - sz * wob * amp * e.weaveSign;
+      const l2 = Math.hypot(bx, bz) || 1;
+      bx /= l2; bz /= l2;
+    }
+
+    const speed = type.speed * (1 - e.statusSlow);
+    const tx = bx * speed, tz = bz * speed;
+    e.vel[0] = M.damp(e.vel[0], tx, type.accel * 0.3, dt);
+    e.vel[2] = M.damp(e.vel[2], tz, type.accel * 0.3, dt);
+  }
+
+  _steerSpecial(e, dt) {
+    const speed = Math.hypot(e.vel[0], e.vel[2]);
+    if (speed < 0.1) return;
+    const origin = [e.pos[0],e.pos[1]+e.height*0.5,e.pos[2]];
+    const direction = [e.vel[0]/speed,0,e.vel[2]/speed];
+    const reach = e.radius + 1.4;
+    if (!this.world.raycast(origin,direction,reach,{}).hit) return;
+    for (const turn of [e.strafeDir*0.8,-e.strafeDir*0.8,e.strafeDir*1.57,-e.strafeDir*1.57]) {
+      const c=Math.cos(turn),s=Math.sin(turn);
+      const d=[direction[0]*c-direction[2]*s,0,direction[0]*s+direction[2]*c];
+      if (!this.world.raycast(origin,d,reach,{}).hit) {
+        e.vel[0]=d[0]*speed; e.vel[2]=d[2]*speed; return;
+      }
+    }
+    e.stuckTimer += dt;
+    if (e.stuckTimer > 0.4 && e.grounded) { e.vel[1]=6; e.stuckTimer=0; e.strafeDir*=-1; }
+  }
+
+  _bossWallMovement(e,dt,player) {
+    if(!player?.alive) return;
+    e.wallJumpCooldown=Math.max(0,e.wallJumpCooldown-dt);
+    // 一次挥刀的前摇/后撤规则仍由绿影 AI 决定，不因上下墙追加伤害。
+    if(e.specialPhase==='windup') { e.wallJumpMode=''; return; }
+    const retreat=e.specialPhase==='retreat';
+    let dx=(player.pos[0]-e.pos[0])*(retreat?-1:1),dz=(player.pos[2]-e.pos[2])*(retreat?-1:1);
+    const length=Math.hypot(dx,dz)||1; dx/=length;dz/=length;
+    if(e.wallJumpMode==='drop') {
+      e.wallJumpTimer-=dt;
+      e.wallNormal=null;
+      // 脱墙后先沿外法线弹出，避免目标隔着墙时直接把自己压回墙里。
+      const n=e.wallJumpNormal||[0,0,0];
+      e.vel[0]=(dx+n[0]*1.4)*e.type.speed;
+      e.vel[2]=(dz+n[2]*1.4)*e.type.speed;
+      e.vel[1]=Math.min(e.vel[1],-12);
+      if(e.wallJumpTimer<=0 || e.grounded) e.wallJumpMode='';
+      return;
+    }
+    if(e.wallJumpMode==='launch') {
+      e.wallJumpTimer-=dt;
+      const n=e.wallJumpNormal;
+      e.vel[0]=-n[0]*18; e.vel[2]=-n[2]*18;
+      e.vel[1]=Math.max(e.vel[1],13);
+      const center=[e.pos[0],e.pos[1]+e.height*0.5,e.pos[2]];
+      const hit=this.world.raycast(center,[-n[0],0,-n[2]],Math.max(e.radius,e.height*0.4)+0.45,{});
+      if(hit.hit && Math.abs(hit.normal[1])<0.25) {
+        e.wallNormal=Array.from(hit.normal);e.wallJumpMode='climb';e.wallJumpTimer=0.8;
+      } else if(e.wallJumpTimer<=0) {e.wallJumpMode='';e.wallJumpCooldown=2;}
+      return;
+    }
+    if(e.wallNormal || e.wallJumpMode==='climb') {
+      const previous=e.wallNormal;
+      this._spiderClimb(e,{pos:[e.pos[0]+dx*20, e.pos[1]+10, e.pos[2]+dz*20]});
+      e.wallJumpTimer-=dt;
+      if(!e.wallNormal || e.wallJumpTimer<=0) {
+        e.wallJumpNormal=previous || e.wallJumpNormal;
+        e.wallNormal=null;e.wallJumpMode='drop';e.wallJumpTimer=0.55;e.wallJumpCooldown=4;
+        e.vel[1]=-12;
+      }
+      return;
+    }
+    if(e.wallJumpCooldown>0 || !e.grounded) return;
+    const origin=[e.pos[0],e.pos[1]+e.height*0.5,e.pos[2]];
+    // 只向射线确认的真实近墙起跳，没有墙时继续原来的地面追击。
+    for(const turn of [0,0.7,-0.7,1.3,-1.3]) {
+      const c=Math.cos(turn),s=Math.sin(turn),dir=[dx*c-dz*s,0,dx*s+dz*c];
+      const wall=this.world.raycast(origin,dir,10,{});
+      if(!wall.hit || Math.abs(wall.normal[1])>0.25) continue;
+      e.wallJumpNormal=Array.from(wall.normal);e.wallJumpMode='launch';e.wallJumpTimer=0.65;
+      e.wallJumpCooldown=4;e.grounded=false;e.vel[1]=15;
+      e.vel[0]=dir[0]*18;e.vel[2]=dir[2]*18;
+      this._specialFx('stalker-slash',e.pos);
+      break;
+    }
+  }
+
+  _spiderClimb(e, player) {
+    const origin=[e.pos[0],e.pos[1]+e.height*0.5,e.pos[2]];
+    let dx=player.pos[0]-e.pos[0],dz=player.pos[2]-e.pos[2];
+    const l=Math.hypot(dx,dz)||1; dx/=l; dz/=l;
+    let hit=this.world.raycast(origin,[dx,0,dz],e.radius+0.8,{});
+    if ((!hit.hit || Math.abs(hit.normal[1])>0.25) && e.wallNormal) {
+      hit=this.world.raycast(origin,e.wallNormal.map(v=>-v),e.radius+0.8,{});
+    }
+    if (!hit.hit || Math.abs(hit.normal[1])>0.25) {
+      // 越过墙沿后继续向目标迈出，而不是在顶沿原地上下抖动。
+      if (e.wallNormal) { e.vel[0]=dx*e.type.speed; e.vel[2]=dz*e.type.speed; e.vel[1]=2.5; }
+      e.wallNormal=null; return;
+    }
+    const n=Array.from(hit.normal); e.wallNormal=n; e.grounded=false;
+    const speed=e.type.speed*(1-e.statusSlow);
+    const dot=dx*n[0]+dz*n[2];
+    // 有墙面接触才关闭重力；法向贴附，切向前进/爬升，依然经过 sweep/resolve。
+    let tx=dx-n[0]*dot,tz=dz-n[2]*dot;
+    const vertical=player.pos[1]<e.pos[1]-1 ? -1 : 1;
+    const len=Math.hypot(tx,vertical,tz)||1;
+    e.vel[0]=tx/len*speed-n[0]*1.5;
+    e.vel[1]=vertical/len*speed;
+    e.vel[2]=tz/len*speed-n[2]*1.5;
+    e.yaw=e.aimYaw=0; // 墙面模型局部 -Z 朝爬升方向
+  }
+
+  _specialDamage(e, player, amount) {
+    const dir=[player.pos[0]-e.pos[0],0,player.pos[2]-e.pos[2]];
+    const l=Math.hypot(...dir)||1;
+    for(let i=0;i<3;i++) dir[i]/=l;
+    // 固定 50 基础伤害，不乘全局 0.35 或难度倍率；正常先盾后血。
+    player.applyDamage(amount,dir,e);
+    this.stats.damageDealt += amount;
+  }
+
+  _detonateSpider(e) {
+    if (!e.alive || this.replicated) return;
+    const targets=new Set(this.players.length ? this.players : [this.player]);
+    for(const p of targets) {
+      if (!p?.alive) continue;
+      const distance=M.dist3(e.pos,p.pos);
+      if(distance<=e.type.blastRadius && this._hasLineOfSight(e,p,distance)) this._specialDamage(e,p,50);
+    }
+    this._specialFx('spider-explode',[e.pos[0],e.pos[1]+e.height*0.5,e.pos[2]]);
+    e.alive=false; e.hp=0; e.deadTime=0; e.wallNormal=null;
+    Events.emit('enemy:die',{enemy:e,pos:e.pos,byPlayer:false,headshot:false,source:'self-destruct'});
+  }
+
+  _specialFx(kind,pos) {
+    this.playSpecialFx(kind,pos);
+    Events.emit('enemy:special-fx',{kind,pos:Array.from(pos)});
+  }
+
+  playSpecialFx(kind,pos) {
+    if(kind==='boss-summon') {
+      Events.emit('audio:play',{name:'boss_arrive',pos,gain:0.8});
+      this.particles?.emit('ring',{pos,count:1,color:[0.1,1,0.3],size:0.8,sizeEnd:6,life:0.8,speed:0,normal:[0,1,0]});
+    }
+    if(kind==='spider-charge') Events.emit('audio:play',{name:'spider_charge',pos,gain:1});
+    if(kind==='stalker-slash') Events.emit('audio:play',{name:'melee_swing',pos,gain:1});
+    if(kind==='spider-explode') {
+      Events.emit('audio:play',{name:'explosion',pos,gain:0.8});
+      // 明亮冲击环与火星，不添加遮挡视野的黑烟。
+      this.particles?.emit('ring',{pos,count:1,color:[1,0.4,0.08],size:0.5,sizeEnd:5,life:0.35,normal:[0,1,0]});
+      this.particles?.emit('spark',{pos,count:22,color:[1,0.55,0.12],speed:12,spread:180,size:0.07,life:0.45});
+    }
+  }
+
+  _specialPresentation(e,dt) {
+    e.slashT=Math.max(0,(e.slashT||0)-dt*3.5);
+    if(!e.alive || !['hitrun','bomber'].includes(e.type.behavior)) return;
+    if (this.replicated && dt > 0 && e.specialLastPos) {
+      for(let k=0;k<3;k++) e.vel[k]=(e.pos[k]-e.specialLastPos[k])/dt;
+      e.animPhase += Math.min(20,Math.hypot(...e.vel))*dt*2.6;
+    }
+    e.specialLastPos=Array.from(e.pos);
+    if(e.type.behavior!=='hitrun') return;
+    e.trailTimer-=dt;
+    if(Math.hypot(e.vel[0],e.vel[2])>5 && e.trailTimer<=0) {
+      e.trailTimer=0.04;
+      const speed=Math.hypot(e.vel[0],e.vel[2]);
+      const back=[-e.vel[0]/speed,0.06,-e.vel[2]/speed];
+      const pos=[e.pos[0]+back[0]*0.35,e.pos[1]+e.height*0.6,e.pos[2]+back[2]*0.35];
+      this.particles?.emit('trail',{pos,dir:back,count:2,color:[0.12,1,0.38],speed:3,spread:9,size:0.12,life:0.32});
+    }
   }
 
   _hasLineOfSight(e, player, dist) {
@@ -856,13 +1194,13 @@ export class EnemySystem {
 
   _physics(e, dt, externalMaxSpeed = 0) {
     const type = e.type;
-    if (!type.flying) {
+    if (!type.flying && !e.wallNormal) {
       e.vel[1] -= CFG.move.gravity * dt;
       if (e.vel[1] < -55) e.vel[1] = -55;
     }
     // 水平速度上限
     const hs = Math.hypot(e.vel[0], e.vel[2]);
-    const maxS = Math.max(type.speed * 1.35, externalMaxSpeed || 0);
+    const maxS = Math.max(type.speed * (type.behavior === 'hitrun' ? 1 : 1.35), externalMaxSpeed || 0);
     if (hs > maxS) {
       const k = maxS / hs;
       e.vel[0] *= k; e.vel[2] *= k;
@@ -901,6 +1239,18 @@ export class EnemySystem {
           e.vel[1] -= hit.normal[1] * d;
           e.vel[2] -= hit.normal[2] * d;
           if (hit.normal[1] > 0.5) e.grounded = true;
+          if (type.behavior === 'bomber' || type.behavior === 'hitrun') {
+            // 消费剩余切向位移：否则贴墙的蜘蛛每帧 t=0，只投影速度而永远爬不上去。
+            const left=dt*(1-M.clamp01(hit.t/dist));
+            const delta=[e.vel[0]*left,e.vel[1]*left,e.vel[2]*left];
+            const length=Math.hypot(...delta);
+            if(length>1e-6) {
+              const c=[e.pos[0],e.pos[1]+e.height*0.5,e.pos[2]];
+              const slide=this.world.sweepSphere(c,sweepR,delta,{});
+              const fraction=slide.hit ? Math.max(0,slide.t-0.01)/length : 1;
+              for(let k=0;k<3;k++) e.pos[k]+=delta[k]*fraction;
+            }
+          }
         } else {
           e.pos[0] += dx; e.pos[1] += dy; e.pos[2] += dz;
         }
@@ -930,7 +1280,7 @@ export class EnemySystem {
       this.damage(e, 9999, false, e.pos, null, { source: 'void' });
     }
     // 动画相位（走路摆动）
-    e.animPhase += Math.hypot(e.vel[0], e.vel[2]) * dt * 2.6;
+    e.animPhase += Math.hypot(e.vel[0], e.wallNormal ? e.vel[1] : 0, e.vel[2]) * dt * 2.6;
   }
 
   // ---------------------------------------------------------------- 伤害
@@ -1174,7 +1524,7 @@ export class EnemySystem {
       const cx = e.pos[0], cy = e.pos[1] + e.height * 0.5, cz = e.pos[2];
       const toC = (cx - origin[0]) * dir[0] + (cy - origin[1]) * dir[1] + (cz - origin[2]) * dir[2];
       if (toC < -e.height || toC > bestT + e.height) continue;
-      const boundR = Math.max(e.radius, e.height * 0.5) * 1.05;
+      const boundR = e.type.hybridBoss ? e.height*0.9 : e.type.meshKind === 'spider' ? 0.75*e.scale : Math.max(e.radius, e.height * 0.5) * 1.05;
       const px2 = origin[0] + dir[0] * toC - cx;
       const py2 = origin[1] + dir[1] * toC - cy;
       const pz2 = origin[2] + dir[2] * toC - cz;
@@ -1252,7 +1602,7 @@ export class EnemySystem {
   }
 
   _renderType(e, type, list) {
-    const shape = SHAPES[type.meshKind] || SHAPES.humanoid;
+    const shape = type.hybridBoss ? HYBRID_SHAPE : SHAPES[type.meshKind] || SHAPES.humanoid;
     // 每个形状由多个"部件"组成，每个部件一次 instanced draw
     for (let partIdx = 0; partIdx < shape.length; partIdx++) {
       const part = shape[partIdx];
@@ -1262,6 +1612,8 @@ export class EnemySystem {
       const cap = Math.min(list.length, 512);
       for (let i = 0; i < cap; i++) {
         const en = list[i];
+        if (type.behavior === 'hitrun' && part.name.startsWith('gun')) continue;
+        if (part.onlyHitrun && type.behavior !== 'hitrun') continue;
         if (!en.alive) {
           // 死亡后的下沉/散架
           const t = M.clamp01(en.deadTime / 1.4);
@@ -1305,8 +1657,11 @@ export class EnemySystem {
     let swing = 0;
     if (isLeg) swing = anim * (part.name.endsWith('L') ? 1 : -1) * 0.45;
     if (isArm) swing = anim * (part.name.endsWith('L') ? -1 : 1) * 0.30;
+    if (type.behavior === 'hitrun' && isArm && part.name.endsWith('R')) swing -= Math.sin((en.slashT || 0) * Math.PI) * 1.8;
+    if (part.spiderLeg) swing = anim * 0.24;
+    if (part.onlyHitrun) swing = -Math.sin((en.slashT || 0)*Math.PI)*1.8;
     // 受击闪白
-    const flash = M.clamp01(en.hitFlash);
+    const flash = M.clamp01(en.hitFlash + (en.specialPhase === 'charge' ? (0.5+0.5*Math.sin(en.age*32))*0.65 : 0));
     const color = type.color;
     const accent = type.accentColor;
 
@@ -1327,6 +1682,18 @@ export class EnemySystem {
     ];
     const m = M.m4Compose([px, py, pz], rot[1], rot[0], rot[2], scale, TMPM);
     const o = slot * 16;
+    if ((type.meshKind === 'spider' || type.hybridBoss) && en.wallNormal) {
+      // 将整个模型绕腹部中心旋到真实墙面，碰撞/命中保持包围腹部的体积。
+      const n = en.wallNormal, h = Math.hypot(n[0], n[2]) || 1;
+      const nx = n[0]/h, nz = n[2]/h;
+      const cx = en.pos[0], cy = en.pos[1] + en.height*0.5, cz = en.pos[2];
+      for (let col=0; col<4; col++) {
+        const j=col*4, x=m[j]-(col===3?cx:0), y=m[j+1]-(col===3?cy:0), z=m[j+2]-(col===3?cz:0);
+        m[j] = nz*x + nx*y + (col===3?cx:0);
+        m[j+1] = -z + (col===3?cy:0);
+        m[j+2] = -nx*x + nz*y + (col===3?cz:0);
+      }
+    }
     this._mats.set(m, o);
     const co = slot * 4;
     // 自发光部位（眼睛/能量核心）用 accent 且提亮
@@ -1377,6 +1744,7 @@ export class EnemySystem {
  */
 const SHAPES = {
   humanoid: [
+    {name:'blade',onlyHitrun:true,mesh:'cone',offset:[0.37,0.92,-0.48],size:[0.07,0.58,0.025],rot:[Math.PI/2,0,0],glow:true},
     // 分层装甲取代单块“火柴人”躯干：骨盆、胸甲、肩甲、头盔、关节和武器
     // 都有独立轮廓，远处仍能一眼读出朝向与姿态。
     { name: 'pelvis', mesh: 'cube', offset: [0, 0.78, 0], size: [0.42, 0.24, 0.30], shade: 0.62 },
@@ -1445,6 +1813,17 @@ const SHAPES = {
     { name: 'tank', mesh: 'cylinder', offset: [0, 1.38, 0.38], size: [0.31, 0.66, 0.31], shade: 0.44 },
     { name: 'tankBand', mesh: 'cube', offset: [0, 1.38, 0.48], size: [0.36, 0.12, 0.12], accent: true },
   ],
+  spider: [
+    {name:'abdomen',mesh:'sphere',offset:[0,0.43,0.22],size:[0.72,0.56,0.8]},
+    {name:'reactor',mesh:'sphere',offset:[0,0.56,0.26],size:[0.38,0.22,0.42],glow:true},
+    {name:'head',mesh:'sphere',offset:[0,0.32,-0.32],size:[0.42,0.32,0.42]},
+    {name:'eyeL',mesh:'sphere',offset:[-0.12,0.40,-0.51],size:[0.075,0.075,0.06],glow:true},
+    {name:'eyeR',mesh:'sphere',offset:[0.12,0.40,-0.51],size:[0.075,0.075,0.06],glow:true},
+    ...[-1,1].flatMap(side=>Array.from({length:4},(_,i)=>[
+      {name:'spiderUpper'+side+i,spiderLeg:true,mesh:'cube',offset:[side*0.50,0.31,(i-1.5)*0.29],size:[0.58,0.075,0.09],rot:[0,side*(i-1.5)*0.30,side*0.28],phase:i*Math.PI/2+(side<0?Math.PI:0),shade:0.7},
+      {name:'spiderLower'+side+i,spiderLeg:true,mesh:'cube',offset:[side*0.83,0.16,(i-1.5)*0.40],size:[0.36,0.065,0.075],rot:[0,side*(i-1.5)*0.34,-side*0.65],phase:i*Math.PI/2+(side<0?Math.PI:0),accent:true},
+    ]).flat()),
+  ],
   crawler: [
     { name: 'body', mesh: 'sphere', offset: [0, 0.28, 0], size: [0.48, 0.31, 0.62], shade: 0.70 },
     { name: 'carapace', mesh: 'cube', offset: [0, 0.39, 0.04], size: [0.42, 0.12, 0.48], accent: true },
@@ -1462,11 +1841,24 @@ const SHAPES = {
   ],
 };
 
+// 蜘蛛腹部/八足 + 绿色人形躯干、手臂、刀刃，不是放大旧重装兵。
+const HYBRID_SHAPE = [
+  ...SHAPES.spider.map(p=>({...p,offset:[p.offset[0]*1.35,p.offset[1],p.offset[2]*1.35],size:[p.size[0]*1.3,p.size[1],p.size[2]*1.3]})),
+  ...SHAPES.humanoid.filter(p=>!p.name.startsWith('gun') && !/^(leg|shin|boot)/.test(p.name))
+    .map(p=>({...p,offset:[p.offset[0],p.offset[1]+0.4,p.offset[2]-0.1]})),
+];
+
 /** 命中盒：由形状推导（head / body / legs） */
 function buildHitboxes(type, scale = 1) {
   const h = type.height * scale;
   const r = type.radius * scale;
   const boxes = [];
+  if (type.hybridBoss) {
+    const b=h*0.66; return [{name:'body',min:[-b,h*0.5-b,-b],max:[b,h*0.5+b,b]}];
+  }
+  if (type.meshKind === 'spider') {
+    return [{name:'body', min:[-0.65*scale, h*0.5-0.65*scale, -0.65*scale], max:[0.65*scale, h*0.5+0.65*scale, 0.65*scale]}];
+  }
   if (type.meshKind === 'crawler') {
     boxes.push({ name: 'head', min: [-r * 0.8, h * 0.2, -r * 0.8], max: [r * 0.8, h * 1.05, r * 0.8] });
     boxes.push({ name: 'body', min: [-r * 1.5, 0, -r * 1.8], max: [r * 1.5, h * 0.9, r * 1.8] });

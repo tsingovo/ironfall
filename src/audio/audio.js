@@ -1824,6 +1824,20 @@ const SOUNDS = {
     },
   },
 
+  spider_charge: {
+    bus: 'sfx', gain: 0.85, dur: 1.1, limit: 6, minGap: 0.04, priority: 5,
+    pitchVar: 0, brightVar: 0, verb: 0.1,
+    build(v,t0,p) {
+      const end=t0+1.1;
+      const osc=oscNode(v,'triangle',380,0,end,t0);
+      osc.frequency.exponentialRampToValueAtTime(1700,end-0.02);
+      const g=gainNode(v,end,0);
+      env(g.gain,t0,1.1,0.02,0.35);
+      osc.connect(g); g.connect(v.in);
+      for(let i=0;i<6;i++) thump(v,t0+i*0.16,{from:130+i*25,to:80,dur:0.08,gain:0.25});
+    },
+  },
+
   enemy_alert: {
     bus: 'sfx', gain: 0.48, dur: 0.5, limit: 3, minGap: 0.15, priority: 2,
     pitchVar: 0.05, brightVar: 0.1, verb: 0.2,

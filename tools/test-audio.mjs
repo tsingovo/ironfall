@@ -726,8 +726,12 @@ section('声部预算与节流');
       burstGain += r.gain;
     }
   }
+  // 新音效改变确定性随机序列的消费位置。单次基准与连发各有 ±8% 增益变化，
+  // 不能直接拿偏低的随机单发要求两倍上限；先扣除两端抖动的最坏比值。
+  const gainVariation = Number(source.match(/const GAIN_VAR\s*=\s*([0-9.]+)/)?.[1] || 0);
+  const jitterRatio = (1 + gainVariation) / (1 - gainVariation);
   check('重复触发被合并/节流',
-    builds <= 4 && burstNodes <= single.nodes * 4 && burstGain < single.gain * 2,
+    builds <= 4 && burstNodes <= single.nodes * 4 && burstGain / jitterRatio < single.gain * 2,
     `单发 ${single.nodes} 节点 / 增益 ${single.gain.toFixed(3)}；同窗口狂点 30 次仅 ${builds} 次合成、合计增益 ${burstGain.toFixed(3)}`);
 
   // 混音器饱和：遍历全部音效连续触发，硬上限必须守住

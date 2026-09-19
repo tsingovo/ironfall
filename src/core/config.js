@@ -19,6 +19,7 @@ const DEFAULTS = {
      * 改这个值必须同步跑 tools/test-ui-input.mjs 的"视图模型在屏占比"断言。
      */
     viewmodelFovDeg: 85,
+    weaponLowering: 0.18,      // 腰射枪体下移，保留屏幕下沿轮廓；ADS 不偏移瞄具
     /** 开始远征时自动进入全屏：全屏下浏览器不再把 Ctrl+W 当成关闭标签页 */
     autoFullscreen: true,
     fovSprintBoost: 8,         // 冲刺时额外 FOV
@@ -34,6 +35,16 @@ const DEFAULTS = {
     terrainResolution: 96,
     cullDistance: 700,
     maxInstancesPerDraw: 4096,
+  },
+
+  recoil: {
+    startShots: 3,             // 第 3 发起进入连射爬升
+    rampShots: 7,              // 再以 7 发的跨度平滑提升到满强度
+    singleShotScale: 0.035,    // 单发仅 3.5% 的驱动力
+    maxPitchSpeedDeg: 7,       // 基础最大上抬角速度（度/秒）
+    acceleration: 9,           // 指数速度响应，约 0.33 秒接近目标速度
+    braking: 22,               // 停火约 0.14 秒消去 95% 速度，不反向回弹
+    burstResetSeconds: 0.30,
   },
 
   // ------------------------------------------------------------ 相机
@@ -185,8 +196,8 @@ const DEFAULTS = {
     /**
      * 开火 / 命中时的屏幕抖动。默认**关闭**：
      * 用户反馈「射击时的屏幕抖动可以取消」，而且高射速武器下每发都抖会让画面持续晃动。
-     * 后坐力本身仍通过相机俯仰（recoilVisual 通道）与准心扩散体现，射击手感不依赖抖动。
-     * 设为 true 即可恢复。
+     * 后坐力由连续角速度驱动相机俯仰，弹道与画面保持同一瞄向，不依赖额外抖动。
+     * 兼容旧配置保留此字段；射击与命中不再发送震动事件。
      */
     fireScreenShake: false,
     // 保留可控的枪械后坐；独立的 fireScreenShake 仍默认关闭，避免高频屏幕震动。

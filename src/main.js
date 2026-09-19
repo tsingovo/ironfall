@@ -431,6 +431,7 @@ class Game {
     on('run:end', (p) => this._onRunEnd(p));
     // 联机：房主把击杀（含击杀者）广播出去，供各端补击杀播报与本人掉落。
     on('enemy:die', (p) => {
+      if (p?.byPlayer === false) return; // 自爆由特效和死亡快照同步，不发“玩家击杀”播报。
       if (!this.lan || !this.lan.isHost || !this.lan.active || !p || !p.enemy) return;
       const src = p.source;
       const by = typeof src === 'string' ? src : this.lan.selfId;
@@ -481,6 +482,7 @@ class Game {
     this.mapSeed = seed;
     const mapData = generateMap({
       seed,
+      missionId: mission.id,
       biome: mission.biome,
       archetype: mission.archetype,
       size: 320,

@@ -58,7 +58,7 @@ const CREDITS_LINES = [
 // 菜单静态描述：构造时一次性建 DOM，之后只切 class / 文本。
 const MENU_SPEC = {
   main: {
-    tag: 'IRONFALL // BUILD 2.1.1',
+    tag: 'IRONFALL // BUILD 2.1.6',
     title: '钢铁远征',
     sub: 'IRONFALL',
     note: '你是钢铁远征舰队熔炉世界里的拾荒者。搜刮、变强、活着撤离。',

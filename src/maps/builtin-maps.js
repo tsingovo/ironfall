@@ -1079,7 +1079,10 @@ function genFoundryHall(ctx) {
   b.addRing(14, coreR, 2.6, floorY, 26, 0, 0, F_STRUCT, 'furnace');
   b.addPlatform(0, 26, 0, coreR * 1.5, coreR * 1.5, F_DECK, 'furnace');
   b.addBox([-coreR * 0.5, -4, -coreR * 0.5], [coreR * 0.5, floorY, coreR * 0.5], F_STRUCT, 'furnace', { force: true });
-  b.addHazard('lava', [-coreR * 0.55, -2, -coreR * 0.55], [coreR * 0.55, floorY + 0.1, coreR * 0.55], 34);
+  // 第一条战役任务保留坩埚建筑，但中央不再生成岩浆判定/液面；外围危险区不变。
+  if (!ctx.removeCentralLava) {
+    b.addHazard('lava', [-coreR * 0.55, -2, -coreR * 0.55], [coreR * 0.55, floorY + 0.1, coreR * 0.55], 34);
+  }
   b.landmarks.push({ kind: 'crucible', x: 0, y: 26, z: 0 });
 
   // 主地板：环形大平台，中心留出坩埚
@@ -1940,7 +1943,7 @@ function fitBoxBudget(b, maxBoxes) {
 
 /**
  * 生成一张完整地图（契约 8.1 格式）。
- * @param {{seed?:number, biome?:string, size?:number, tier?:number, archetype?:string}} opts
+ * @param {{seed?:number, biome?:string, size?:number, tier?:number, archetype?:string, missionId?:string}} opts
  * @returns {object} 地图 JSON
  */
 export function generateMap(opts) {
@@ -1974,6 +1977,7 @@ export function generateMap(opts) {
     const ctx = {
       b, rng, size, half: size / 2, tier, biome, terrain,
       heightFn, terrainHeight: (x, z) => heightFn(x, z), terrainSeed: attemptSeed,
+      removeCentralLava: o.missionId === 'm01',
     };
 
     const outline = requested.build(ctx) || {};
