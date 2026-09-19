@@ -1279,8 +1279,152 @@ export class EnemySystem {
     if (e.pos[1] < -120) {
       this.damage(e, 9999, false, e.pos, null, { source: 'void' });
     }
+
+    // 水平边界兜底：大部分原型没有外围墙，敌人也会跑出地形网格掉进虚空。
+    // 夹回范围内并清掉朝外的速度分量，否则它会贴着边界一直顶。
+    if (typeof this.world.clampToBounds === 'function') {
+      const pushInset = Math.max(e.radius || 0.4, 0.6) + 0.6;
+      const pushed = this.world.clampToBounds(e.pos, pushInset);
+      if (pushed) {
+        if (pushed & 1) e.vel[0] = 0;
+        if (pushed & 2) e.vel[2] = 0;
+      }
+    }
+
+    // 卡住检测：贴墙/夹角里原地磨 —— 玩家看到的是"怪卡墙里动不了"。
+    // 判定条件：这一帧几乎没动，但速度本身不小（真的在用力，只是被卡住）。
+    this._detectStuck(e, dt);
+
+    // 不靠墙倾向：只有爆蛛（爬墙自爆蛛）和绿影蛛皇靠贴墙机动，其余兵种
+    // 贴墙只会卡住、也会给人"卡模型"的观感（用户反馈"除蜘蛛外倾向不靠墙"）。
+    this._avoidWalls(e, dt);
+
     // 动画相位（走路摆动）
     e.animPhase += Math.hypot(e.vel[0], e.wallNormal ? e.vel[1] : 0, e.vel[2]) * dt * 2.6;
+  }
+
+  /**
+   * 非爬墙兵种的"不靠墙"倾向。
+   *
+   * 做法：沿当前速度方向打一条短探针，探到墙就沿着墙的**切向**重新分配速度，
+   * 并叠加一点朝外的推力。相比"撞到再硬转"，这样怪会自然地沿着墙面滑过去、
+   * 与墙保持一点距离，不会蹭着墙磨。
+   *
+   * 跳过：爆蛛（本来就要爬墙）、绿影蛛皇（BOSS 会主动上墙）、飞行单位。
+   */
+  _avoidWalls(e, dt) {
+    const type = e.type;
+    if (type.flying || type.wallClimber) return;
+    if (type.meshKind === 'spider' || type.hybridBoss) return;
+    const hs = Math.hypot(e.vel[0], e.vel[2]);
+    if (hs < 1.2) return;                       // 没在移动就不用管
+
+    const origin = T_A;
+    origin[0] = e.pos[0];
+    origin[1] = e.pos[1] + e.height * 0.5;
+    origin[2] = e.pos[2];
+    const dir = T_B;
+    dir[0] = e.vel[0] / hs; dir[1] = 0; dir[2] = e.vel[2] / hs;
+
+    // 探针长度：身体半径 + 一点余量，太短没意义、太长会让怪在空旷处也绕
+    const reach = Math.max(e.radius, 0.4) + 0.9;
+    const hit = this.world.raycast(origin, dir, reach, {});
+    if (!hit.hit) {
+      e.wallAvoidCd = 0;
+      return;
+    }
+    // 只处理"竖直墙面"：地面/薄板（法线朝上/下）不参与，否则走下坡会被误判
+    const n = hit.normal;
+    if (Math.abs(n[1]) > 0.7) return;
+
+    // 沿切向重定向：把速度投影到墙面上，再叠加朝外的分离力
+    const d = e.vel[0] * n[0] + e.vel[2] * n[2];
+    let vx = e.vel[0] - n[0] * d;
+    let vz = e.vel[2] - n[2] * d;
+    const sep = 2.4;                            // 朝外推的强度（m/s）
+    vx += n[0] * sep;
+    vz += n[2] * sep;
+    // 保持原有水平速度大小，避免靠墙就整体变慢
+    const l = Math.hypot(vx, vz) || 1;
+    e.vel[0] = vx / l * hs;
+    e.vel[2] = vz / l * hs;
+    e.wallAvoidCd = 0.15;                        // 短暂抑制，避免每帧抖动
+  }
+
+  /**
+   * 卡住检测与自动脱离。
+   *
+   * 为什么需要：推出式碰撞解算在墙角/薄板/斜面夹角处会把怪"顶住"，
+   * 它速度不为零却几乎不位移，表现就是「卡墙里动不了」，而且会一直卡下去
+   * （玩家反馈的问题）。这里累计"想动但没动"的时长，超过阈值就主动脱离。
+   *
+   * 脱离手段按代价递增：
+   *   1. 先给它一个向上的推力 + 侧向速度，靠引擎自身的碰撞解算爬出来（最自然）
+   *   2. 还不行就沿"离它最近的可用导航点"方向推一把
+   *   3. 仍然不行才瞬移到该导航点（最后手段，避免永久卡死）
+   * 蜘蛛/飞行单位不参与（爆蛛本来就要贴墙爬，卡住是它的正常表现）。
+   */
+  _detectStuck(e, dt) {
+    // 这类兵种靠贴墙移动，不能按"卡住"处理
+    if (e.type.flying || e.type.meshKind === 'spider' || e.wallNormal || e.type.hybridBoss) {
+      e.stuckTime = 0;
+      e.lastPos = null;
+      return;
+    }
+    const lx = e.lastPos ? e.lastPos[0] : e.pos[0];
+    const lz = e.lastPos ? e.lastPos[2] : e.pos[2];
+    if (!e.lastPos) e.lastPos = [e.pos[0], e.pos[1], e.pos[2]];
+    const moved = Math.hypot(e.pos[0] - lx, e.pos[2] - lz);
+    const wants = Math.hypot(e.vel[0], e.vel[2]);
+
+    if (wants > 0.8 && moved < 0.02) {
+      e.stuckTime = (e.stuckTime || 0) + dt;
+    } else {
+      e.stuckTime = 0;
+    }
+    e.lastPos[0] = e.pos[0];
+    e.lastPos[1] = e.pos[1];
+    e.lastPos[2] = e.pos[2];
+
+    if (e.stuckTime < 0.6) return;
+
+    // 阶段 1：上抬 + 侧向速度，靠引擎自己爬出来
+    e.stuckTime = 0;
+    e.stuckAttempts = (e.stuckAttempts || 0) + 1;
+    if (e.grounded || e.stuckAttempts <= 2) {
+      e.vel[1] = Math.max(e.vel[1], 6.5);
+      const side = (e.id % 2 === 0) ? 1 : -1;
+      // 注意：两个分量必须都基于**原始**速度算，否则先改 vel[0] 再拿它算 vel[2]
+      // 会得到错误的方向（这里踩过一次）。
+      const vx = e.vel[0], vz = e.vel[2];
+      const s = Math.hypot(vx, vz) || 1;
+      // 沿速度的左手/右手方向给一个横向推力，避免继续正对墙面磨
+      e.vel[0] = vx + (-vz / s) * 4.5 * side;
+      e.vel[2] = vz + (vx / s) * 4.5 * side;
+      return;
+    }
+
+    // 阶段 2：挪到最近的可用导航点（避免永久卡死）。
+    // 只在反复失败后才用，且只找半径 12m 内的点，不会把它瞬移到玩家脸上。
+    const cands = this.world.navCandidates ? this.world.navCandidates() : null;
+    if (cands && cands.length) {
+      let best = null, bestD = 12 * 12;
+      for (let i = 0; i < cands.length; i += 2) {
+        const c = cands[i];
+        const dx = c[0] - e.pos[0], dz = c[2] - e.pos[2];
+        const d2 = dx * dx + dz * dz;
+        if (d2 < bestD) { bestD = d2; best = c; }
+      }
+      if (best) {
+        e.pos[0] = best[0];
+        e.pos[1] = best[1] + 0.1;
+        e.pos[2] = best[2];
+        e.vel[0] = 0; e.vel[1] = 0; e.vel[2] = 0;
+        e.stuckAttempts = 0;
+        return;
+      }
+    }
+    e.stuckAttempts = 0;
   }
 
   // ---------------------------------------------------------------- 伤害

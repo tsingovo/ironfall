@@ -1705,6 +1705,23 @@ export class Player {
 
     // 护盾再生
     this._regenShield(dt);
+
+    // 地图边界兜底：大部分原型没有外围墙，跑出地形网格就没有任何几何可碰撞，
+    // 会直接掉进虚空且回不来。这里硬性夹回范围内，并把朝外的速度分量清零，
+    // 否则玩家会一直贴着边界"顶着墙跑"。详见 world.clampToBounds 的注释。
+    this._enforceBounds();
+  }
+
+  /** 把玩家夹回地图范围内；返回是否发生了夹取（供调试统计） */
+  _enforceBounds() {
+    const w = this.world;
+    if (!w || typeof w.clampToBounds !== 'function') return false;
+    // 收缩量 = 胶囊半径 + 余量，保证夹住之后身体完整在界内
+    const pushed = w.clampToBounds(this.pos, (this.radius || 0.35) + 0.6);
+    if (!pushed) return false;
+    if (pushed & 1) this.vel[0] = 0;
+    if (pushed & 2) this.vel[2] = 0;
+    return true;
   }
 
   _regenShield(dt) {

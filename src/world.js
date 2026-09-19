@@ -1129,6 +1129,36 @@ export class World {
    *
    * 返回 { lifted, pushedOut } 供调试统计。
    */
+  /**
+   * 把位置夹回地图范围内（水平方向），并返回被推回的轴向，供调用方清零速度。
+   *
+   * 为什么需要：**大部分地图原型没有外围墙**（只有 foundry_hall 建了"四周外墙"），
+   * 地形三角网格也只覆盖 ±size/2。玩家/敌人一旦跑出边缘，脚下就没有任何几何，
+   * 碰撞解算无物可推 —— 表现就是「冲出地图、掉进虚空、再也回不来」。
+   * 这里做一次硬性夹取，是**唯一不依赖地图作者建墙**的兜底。
+   *
+   * @param posOut 位置（原地修改）
+   * @param inset  向内收缩量（默认 1.5m：留出胶囊半径 + 一点余量）
+   * @returns {number} 位掩码：1=推回 X，2=推回 Z，0=本来就在范围内
+   */
+  clampToBounds(posOut, inset = 1.5) {
+    const half = this.size * 0.5 - Math.max(0, inset);
+    if (!(half > 0)) return 0;              // 地图尺寸异常时不干预
+    let pushed = 0;
+    if (posOut[0] > half) { posOut[0] = half; pushed |= 1; }
+    else if (posOut[0] < -half) { posOut[0] = -half; pushed |= 1; }
+    if (posOut[2] > half) { posOut[2] = half; pushed |= 2; }
+    else if (posOut[2] < -half) { posOut[2] = -half; pushed |= 2; }
+    return pushed;
+  }
+
+  /** 位置是否已经在地图范围之外（用于刷怪/传送前校验） */
+  isOutOfBounds(pos, inset = 1.5) {
+    const half = this.size * 0.5 - Math.max(0, inset);
+    if (!(half > 0)) return false;
+    return Math.abs(pos[0]) > half || Math.abs(pos[2]) > half;
+  }
+
   enforceCapsuleValidity(posOut, radius, height) {
     let lifted = 0;
     let pushedOut = 0;
