@@ -2189,15 +2189,15 @@ class Game {
       // 模型 / 墙体，表现为"视角被卡在模型里"。沿视线前移 0.35m 即可脱出，
       // 同时与第一人称观感基本一致（不会明显"飘在身前"）。
       const EYE_FWD = 0.35;
-      cameraPos[0] = spectator.eyePos[0] + fwd[0] * EYE_FWD;
-      cameraPos[1] = spectator.eyePos[1] + fwd[1] * EYE_FWD;
-      cameraPos[2] = spectator.eyePos[2] + fwd[2] * EYE_FWD;
+      VIEW_POS[0] = spectator.eyePos[0] + fwd[0] * EYE_FWD;
+      VIEW_POS[1] = spectator.eyePos[1] + fwd[1] * EYE_FWD;
+      VIEW_POS[2] = spectator.eyePos[2] + fwd[2] * EYE_FWD;
     } else {
-      cameraPos[0] = p.eyePos[0];
-      cameraPos[1] = p.eyePos[1];
-      cameraPos[2] = p.eyePos[2];
+      VIEW_POS[0] = p.eyePos[0];
+      VIEW_POS[1] = p.eyePos[1];
+      VIEW_POS[2] = p.eyePos[2];
     }
-    e.setCamera(cameraPos, fwd, up, fov, CFG.render.near, CFG.render.far);
+    e.setCamera(VIEW_POS, fwd, up, fov, CFG.render.near, CFG.render.far);
     this.hud?.setLanNameplates?.(this.lan?.nameplates?.() || [], e);
     void cp; void sy;
 
@@ -2552,6 +2552,10 @@ class Game {
 
 const VIEW_FWD = new Float32Array(3);
 const VIEW_UP = new Float32Array(3);
+// 相机位置（每帧复用）。观战时会在这里写入前移后的坐标，
+// 正常游玩时写入玩家眼位。**必须有模块级声明** ——
+// 早先只在分支里赋值没有声明，导致 "cameraPos is not defined" 让游戏直接白屏。
+const VIEW_POS = new Float32Array(3);
 
 function round2(v) { return Math.round(v * 100) / 100; }
 
