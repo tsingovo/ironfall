@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { createFriendBridge } from './friend-bridge.mjs';
 
 function peer(base, room) {
@@ -70,11 +70,14 @@ function peer(base, room) {
 const CONFIG = 'dist/friend-server.json';
 const CERT = 'dist/friend-server.crt';
 
-function missing(file) {
-  try { readFileSync(file); return false; } catch { return true; }
+// 注意：本文件只从 node:fs/promises 导入了 readFile（异步）。
+// 早先这里误用 readFileSync（未导入 → 抛异常 → 被 catch 吞掉），
+// 导致**即使文件存在也被判定为缺失**，测试永远跳过。改用异步 stat。
+async function missing(file) {
+  try { await stat(file); return false; } catch { return true; }
 }
 
-if (missing(CONFIG) || missing(CERT)) {
+if (await missing(CONFIG) || await missing(CERT)) {
   console.log('SKIP friend-bridge：未找到中转配置（opt-in 实网检查）');
   console.log(`  需要 ${CONFIG} 与 ${CERT} 才能运行；`);
   console.log('  这两个文件属于具体部署方，不在仓库里，属预期缺失。');
