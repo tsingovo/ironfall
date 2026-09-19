@@ -29,3 +29,6 @@ dist/
 # 用 `release/*` 只排除目录内容，才能保留 release/README.md。
 release/*
 !release/README.md
+
+# 临时提交消息文件（避免误入库）
+.commitmsg.tmp
