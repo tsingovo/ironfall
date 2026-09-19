@@ -339,7 +339,13 @@ export class MetaProgress {
     return true;
   }
 
-  /** 成功完成一关后的战役推进；第 10 关停留在第 10 关。 */
+  /**
+   * 成功完成一关后的战役推进，返回**新的当前关卡**。
+   *
+   * 第 10 关（CAMPAIGN_TIER_COUNT）之后循环回第 1 关：十层远征是闭环的，
+   * 打通后重新开始，但已解锁的层数与元进度全部保留。
+   * 之前的注释写成「第 10 关停留在第 10 关」，与实现不符，已更正。
+   */
   advanceCampaign(completedTier = this.unlocked.currentTier) {
     const completed = clampTier(completedTier);
     const next = completed === CAMPAIGN_TIER_COUNT ? 1 : completed + 1;

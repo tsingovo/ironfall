@@ -63,8 +63,26 @@ function peer(base, room) {
   };
 }
 
-const config = JSON.parse(await readFile('dist/friend-server.json', 'utf8'));
-const bridge = createFriendBridge({ ...config, ca: await readFile('dist/friend-server.crt'), html: '<title>test</title>' });
+// 这是一个 **opt-in 的实网检查**：需要部署方自己的中转配置
+// （dist/friend-server.json + dist/friend-server.crt）。仓库里不包含这两个文件，
+// 所以默认应当**干净跳过**而不是抛异常 —— 否则会让整个自测矩阵出现一个
+// 看起来像回归、实际只是缺配置的失败项。
+const CONFIG = 'dist/friend-server.json';
+const CERT = 'dist/friend-server.crt';
+
+function missing(file) {
+  try { readFileSync(file); return false; } catch { return true; }
+}
+
+if (missing(CONFIG) || missing(CERT)) {
+  console.log('SKIP friend-bridge：未找到中转配置（opt-in 实网检查）');
+  console.log(`  需要 ${CONFIG} 与 ${CERT} 才能运行；`);
+  console.log('  这两个文件属于具体部署方，不在仓库里，属预期缺失。');
+  process.exit(0);
+}
+
+const config = JSON.parse(await readFile(CONFIG, 'utf8'));
+const bridge = createFriendBridge({ ...config, ca: await readFile(CERT), html: '<title>test</title>' });
 const base = await bridge.listen();
 const clients = [];
 try {

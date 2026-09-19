@@ -250,11 +250,40 @@ check('拖出面板调用 dropSlot', /dragend[\s\S]{0,500}outside[\s\S]{0,180}dr
 check('专用丢弃区调用 dropSlot', /inventory-drop-zone[\s\S]{0,700}dropSlot\(this\._dragFrom, this\._playerForDrop\)/.test(inventorySrc));
 check('背包打开：暂停、屏蔽菜单输入、释放锁定、保存玩家引用', /openBackpack\(\)[\s\S]{0,700}this\.paused = true[\s\S]{0,300}Input\.setMenuBlocking\(true\)[\s\S]{0,200}Input\.exitLock\(\)[\s\S]{0,200}setOpen\(true, this\.player\)/.test(mainSrc));
 check('背包关闭：解除屏蔽并恢复游玩/鼠标锁', /closeBackpack\(\)[\s\S]{0,700}this\.paused = false[\s\S]{0,260}Input\.setMenuBlocking\(false\)[\s\S]{0,260}Input\.setPlaying[\s\S]{0,300}_requestPointerLockWithRetry\(\)/.test(mainSrc));
-check('Esc 优先关闭背包，不会在背后打开设置', /actionPressed\('pause'\)[\s\S]{0,240}inventory\.open[\s\S]{0,120}closeBackpack\(\)[\s\S]{0,80}return/.test(mainSrc));
-check('Tab 在游玩中开关背包', /Input\.pressed\('Tab'\)[\s\S]{0,260}inventory\.open[\s\S]{0,100}closeBackpack[\s\S]{0,160}openBackpack/.test(mainSrc));
-const globalAt = mainSrc.indexOf('this._handleGlobalKeys();');
-const pausedAt = mainSrc.indexOf('if (this.paused)', globalAt);
-check('全局按键处理发生在 paused 早退之前', globalAt >= 0 && pausedAt > globalAt);
+// 下面两条原本是脆弱的源码正则：把「多少字符之内出现某个调用」当断言。
+// 联机改动在 Esc 分支里插入了「联机阵亡 → 观战 / 结算」的处理，
+// 间隔被撑大导致正则失配 —— 但**行为其实仍然正确**。改为按行为判定。
+{
+  const gkStart = mainSrc.indexOf('_handleGlobalKeys()');
+  const gkBody = gkStart >= 0 ? mainSrc.slice(gkStart, gkStart + 4000) : '';
+  const escAt = gkBody.indexOf("actionPressed('pause')");
+  const escBranch = escAt >= 0 ? gkBody.slice(escAt, escAt + 2000) : '';
+  const invAt = escBranch.search(/inventory\??\.open/);
+  const closeAt = escBranch.indexOf('closeBackpack()');
+  const returnAfterClose = closeAt >= 0 && escBranch.slice(closeAt, closeAt + 120).includes('return');
+  check('Esc 优先关闭背包，不会在背后打开设置',
+    escAt >= 0 && invAt >= 0 && closeAt >= 0 && returnAfterClose,
+    `pause 分支=${escAt >= 0} 背包判断=${invAt >= 0} 关闭=${closeAt >= 0} 关闭后 return=${returnAfterClose}`);
+
+  const tabAt = gkBody.indexOf("pressed('Tab')");
+  const tabBranch = tabAt >= 0 ? gkBody.slice(tabAt, tabAt + 800) : '';
+  check('Tab 在游玩中开关背包',
+    tabAt >= 0 && tabBranch.includes('closeBackpack') && tabBranch.includes('openBackpack'),
+    `Tab 分支存在=${tabAt >= 0}`);
+}
+
+// 全局按键必须先于「暂停早退」执行，否则打开菜单后收不到第二次 Esc。
+// 早期写法是裸的 `if (this.paused)`；联机改动换成了带联机例外的复合条件，
+// 所以这里按「顺序关系」判定，而不是匹配某个具体写法。
+{
+  const globalAt = mainSrc.indexOf('this._handleGlobalKeys();');
+  const after = globalAt >= 0 ? mainSrc.slice(globalAt, globalAt + 1400) : '';
+  const pausedIdx = after.search(/if \(this\.paused/);
+  const returnIdx = pausedIdx >= 0 ? after.indexOf('return', pausedIdx) : -1;
+  check('全局按键处理发生在 paused 早退之前',
+    globalAt >= 0 && pausedIdx >= 0 && returnIdx > pausedIdx,
+    `_handleGlobalKeys@${globalAt} paused@${pausedIdx >= 0 ? globalAt + pausedIdx : -1}`);
+}
 check('E 拾取在补给交互前消费并清 interactPressed', /nearDrop && input\.interactPressed[\s\S]{0,180}pickupNearest[\s\S]{0,500}input\.interactPressed = false[\s\S]{0,250}nearSupplyStation/.test(mainSrc));
 check('输入层阻止游玩中的 Tab 浏览器默认行为', /BLOCK_DEFAULT[\s\S]{0,180}'Space', 'Tab'/.test(inputSrc));
 check('index 正确加载背包 CSS 且位于 HUD 修复 CSS 前', indexSrc.indexOf('styles/inventory.css') > 0
