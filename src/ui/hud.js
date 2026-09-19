@@ -1447,6 +1447,10 @@ export class HUD {
       this._renderDamageNumbers();
       this._renderEnemyVitals();
       this._renderDebug();
+      // 联机面板：只在打开时持续重绘。
+      // _paintMenu() 仅在 showMenu() 时跑一次，面板打开后队友再加入就不会刷新，
+      // 表现是「队友进来了列表还是空的」。这里每帧补绘，与其它面板的刷新方式一致。
+      if (this._menu === 'lan') this._paintLanPanel();
     } catch (err) {
       this._recordError(err);
     }
@@ -2289,6 +2293,12 @@ export class HUD {
    */
   setLanState(state) {
     this._lanState = state && typeof state === 'object' ? state : null;
+    // 立即重绘：_paintMenu() 只在 showMenu() 时跑一次，面板打开后不会自己刷新。
+    // 队友在自己打开面板之后加入时，玩家看到的会是打开那一刻的快照（只有自己 +
+    // 空位），表现就是「队友进来了列表还是空的」。这里补一次按需重绘即可。
+    if (this._built && !this._disposed && this._menu === 'lan') {
+      try { this._paintLanPanel(); } catch (_e) { /* 单次绘制失败不应影响主循环 */ }
+    }
   }
 
   setLanDeathState(state) {

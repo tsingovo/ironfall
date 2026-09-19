@@ -215,25 +215,66 @@ export class Run {
     this._updateExtraction(scaled, p);
   }
 
+  /**
+   * 任务进度推进。
+   *
+   * 联机下的权威规则（重要）：
+   *   · **只有房主计算进度**。客机完全依赖房主广播的权威值（见 net/session.js
+   *     的 _applyRunState），自己不再累加 —— 否则两端各算各的必然分歧。
+   *   · 房主把"所有正在交互的玩家"都算进来（本机玩家 + 各房客的远程代理），
+   *     所以队友按住 E 同样能推进，而不是只有房主一个人能推。
+   *     这是"队友无法做任务 / 任务进度不共享"的根因。
+   *
+   * `this.objectiveInteractors` 由 main.js 每个物理步刷新。
+   */
   _updateObjectives(dt, p) {
     if (this.phase !== RUN_PHASE.OBJECTIVES && this.phase !== RUN_PHASE.EXTRACT_READY) return;
     this.nearObjective = null;
     let remaining = 0;
+
+    // 参与推进的玩家：未注入时退化为"只有本机玩家"（单机行为不变）
+    const actors = Array.isArray(this.objectiveInteractors) && this.objectiveInteractors.length
+      ? this.objectiveInteractors : (p ? [p] : []);
+    const authoritative = this.authoritativeObjectives !== false;
+
+    // 先清上一帧的"谁在交互"，再按本帧重新标记
+    for (const o of this.objectives) o.interactBy = null;
+
     for (const o of this.objectives) {
       if (o.done) continue;
       remaining++;
-      const d = M.dist3(p.pos, o.pos);
-      if (d > o.radius + 4) continue;
-      this.nearObjective = o;
-      if (!o.done) {
-        p._interactProgress = (p._interactProgress || 0);
+
+      for (const actor of actors) {
+        if (!actor || !actor.pos || actor.alive === false) continue;
+        const d = M.dist3(actor.pos, o.pos);
+        if (d > o.radius + 4) continue;
+
+        // 提示用的"最近任务"以本机玩家为准
+        if (actor === p) this.nearObjective = o;
+
+        // 客机不本地推进（权威值来自房主），但仍记录 interactBy 供 HUD 显示
+        if (!authoritative) {
+          if (actor.interacting && o.type !== 'destroy') o.interactBy = actor === p ? 'self' : (actor.netId || 'ally');
+          continue;
+        }
+
         // destroy 必须用武器打坏实体；其余任务必须按住交互执行夺取/破坏/回收，
         // 不再只是走进圆圈站着等待读条。
-        if (p.alive && p.state.grounded && o.type !== 'destroy' && this.objectiveInteractDown) {
+        //
+        // 交互判定兼容两种入口：
+        //   · actor.interacting —— 由 main.js 的 _objectiveInteractors() 每步写入，
+        //     联机时各房客的远程代理也带这个字段
+        //   · this.objectiveInteractDown —— 旧的单一开关（只代表本机玩家），
+        //     保留它是为了不破坏既有自测与外部调用
+        const interacting = !!actor.interacting
+          || (actor === p && !!this.objectiveInteractDown);
+        if (interacting && actor.state && actor.state.grounded && o.type !== 'destroy') {
           const rate = 1 / Math.max(2.0, 6.5 - this.tier * 0.35);
           o.progress = M.clamp01(o.progress + dt * rate);
+          if (!o.interactBy) o.interactBy = actor === p ? 'self' : (actor.netId || 'ally');
           if (o.progress >= 1) {
             this._completeObjective(o);
+            break;                         // 该目标已完成，不必再让其他人累加
           }
         }
       }
@@ -346,16 +387,34 @@ export class Run {
   _updateExtraction(dt, p) {
     if (this.phase !== RUN_PHASE.EXTRACT_READY && this.phase !== RUN_PHASE.EXTRACTING) return;
     if (!this.activeExtract) return;
-    const d = M.dist3(p.pos, this.activeExtract.pos);
-    const inZone = d <= this.activeExtract.radius;
-    if (inZone && p.alive) {
+
+    // 联机权威规则与任务进度一致：**只有房主推进撤离读条**，
+    // 且任何一位站在信标范围内的玩家都能推进（队友也能拉撤离）。
+    // 客机只用房主广播的 extractHold 显示，不自己累加，避免两端分歧。
+    if (this.authoritativeObjectives === false) return;
+
+    const actors = Array.isArray(this.objectiveInteractors) && this.objectiveInteractors.length
+      ? this.objectiveInteractors : (p ? [p] : []);
+
+    let anyoneInZone = false;
+    let disturbed = 0;
+    for (const actor of actors) {
+      if (!actor || !actor.pos || actor.alive === false) continue;
+      const d = M.dist3(actor.pos, this.activeExtract.pos);
+      if (d > this.activeExtract.radius) continue;
+      anyoneInZone = true;
+      // 被击中会打断读条（压力来源）；统计最慢的那位
+      const speed = (actor.state && Number.isFinite(actor.state.speed)) ? actor.state.speed : 0;
+      disturbed = Math.max(disturbed, speed > 0.5 ? 0.55 : 1.0);
+      if (actor === p) this.nearExtract = true;
+    }
+
+    if (anyoneInZone) {
       if (this.phase === RUN_PHASE.EXTRACT_READY) {
         this.phase = RUN_PHASE.EXTRACTING;
         Events.emit('audio:play', { name: 'extract_countdown' });
         Events.emit('ui:message', { title: '撤离中', sub: '保持站位 —— 敌方正在逼近', kind: 'warn' });
       }
-      // 被击中会打断读条（压力来源）
-      const disturbed = p.state.speed > 0.5 ? 0.55 : 1.0;
       this.extractHold += dt * disturbed;
       if (this.extractHold >= this.extractRequired) {
         this.end(true);

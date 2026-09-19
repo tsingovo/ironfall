@@ -451,7 +451,16 @@ class Game {
    */
   _onEnemyKill(enemy, headshot, opts) {
     const source = opts && opts.source;
-    if (typeof source === 'string') return;
+    if (typeof source === 'string') {
+      // 击杀者是某位房客：击杀奖励由**那位房客本机**结算（吸血、冲刺重置等
+      // 是他自己的角色状态），房主不能替他吃掉。
+      //
+      // 但**掉落物必须由房主生成** —— 掉落列表由房主统一广播给所有人
+      // （见 net/session.js 的 _snapshotDrops）。早先这里直接 return，
+      // 导致"房客击杀的敌人不掉东西"，队友和自己都看不到。
+      if (this.inventory) this.inventory.spawnEnemyDrop(enemy, this.world);
+      return;
+    }
     this.applyKillRewards(headshot);
     if (this.inventory) this.inventory.spawnEnemyDrop(enemy, this.world);
     Audio.play('kill_confirm', { gain: 0.95 });
@@ -1979,7 +1988,13 @@ class Game {
     this.enemies.update(dt, p);
     // 房客不跑刷怪导演：刷怪是房主的权威行为，房客只接收敌人快照。
     if (!this._lanGuest()) this.director.update(dt);
+    // 任务进度：把"所有正在交互的玩家"交给 run。
+    // 单机时只有本机玩家；联机房主会追加各房客的远程代理（带 interacting + netId），
+    // 这样队友按住 E 也能推进进度 —— 修「队友无法做任务 / 进度不共享」。
+    // 客机不参与计算（authoritativeObjectives=false），只显示房主广播的权威进度，避免两端分歧。
     this.run.objectiveInteractDown = !!input.interactDown;
+    this.run.authoritativeObjectives = !this._lanGuest();
+    this.run.objectiveInteractors = this._objectiveInteractors(p, input);
     this.run.update(dt, p);
 
     if (this.inventory) this.inventory.update(dt, p);
@@ -2011,6 +2026,32 @@ class Game {
         };
       }
     }
+  }
+
+  /**
+   * 汇总"正在交互任务的玩家"，交给 run 做进度推进。
+   *
+   * 单机：只有本机玩家。
+   * 联机房主：本机玩家 + 各房客的远程代理。远程代理上的 `interacting` 来自
+   *   该房客上报的 INTERACT 标志（net/session.js 写入），`netId` 用于告诉 HUD
+   *   "是队友在推"而不是自己。
+   *
+   * 返回的数组按物理步复用，避免每步分配。
+   */
+  _objectiveInteractors(p, input) {
+    const list = this._interactorBuf || (this._interactorBuf = []);
+    list.length = 0;
+    if (!p) return list;
+    p.interacting = !!(input && input.interactDown);
+    list.push(p);
+    // 房主才需要把队友算进来；客机的进度以房主广播为准，不参与计算。
+    if (!this._lanGuest() && this.lan && this.lan.remotes) {
+      for (const r of this.lan.remotes.values()) {
+        if (!r || !r.alive || r.stale) continue;
+        list.push(r);
+      }
+    }
+    return list;
   }
 
   _interact(dt, input) {
@@ -2138,13 +2179,23 @@ class Game {
       this.canvas.clientHeight || window.innerHeight, CFG.render.maxPixelRatio);
     e.beginFrame();
     const spectator = this._lanSpectateTarget;
-    const cameraPos = spectator ? spectator.eyePos : p.eyePos;
     if (spectator) {
       const pitch = spectator.pitch || 0, yaw = spectator.yaw || 0;
       fwd[0] = -Math.sin(yaw) * Math.cos(pitch);
       fwd[1] = Math.sin(pitch);
       fwd[2] = -Math.cos(yaw) * Math.cos(pitch);
       buildUpFromForward(fwd, 0, up);
+      // 观战相机前移一小段：直接坐在队友眼球位置时，近裁剪面会切进他身边的任务
+      // 模型 / 墙体，表现为"视角被卡在模型里"。沿视线前移 0.35m 即可脱出，
+      // 同时与第一人称观感基本一致（不会明显"飘在身前"）。
+      const EYE_FWD = 0.35;
+      cameraPos[0] = spectator.eyePos[0] + fwd[0] * EYE_FWD;
+      cameraPos[1] = spectator.eyePos[1] + fwd[1] * EYE_FWD;
+      cameraPos[2] = spectator.eyePos[2] + fwd[2] * EYE_FWD;
+    } else {
+      cameraPos[0] = p.eyePos[0];
+      cameraPos[1] = p.eyePos[1];
+      cameraPos[2] = p.eyePos[2];
     }
     e.setCamera(cameraPos, fwd, up, fov, CFG.render.near, CFG.render.far);
     this.hud?.setLanNameplates?.(this.lan?.nameplates?.() || [], e);

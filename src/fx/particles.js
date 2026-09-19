@@ -10,21 +10,28 @@ import { CFG } from '../core/config.js';
 import * as M from '../core/math.js';
 
 // 粒子种类参数表：kind -> { drag, gravity, life, size, sizeEnd, kindOf:'stretch'|'billboard'|'ring', spin }
+//
+// 烟雾类尺寸说明（用户反馈「击中和跑动的烟雾太大，请调小很多很多」）：
+//   原值：smoke 0.35→1.5m、dust 0.28→1.05m、explosion 0.55→2.6m、muzzleSmoke 0.16→0.85m。
+//   问题在于击中与落地时烟雾正好在准心前方炸开，一大团直接糊住视野、影响索敌。
+//   现在整体缩到约 1/4，并略微降低 alpha：保留「有烟」的反馈，但不挡视线。
+//   ⚠️ 调用处的 size / sizeEnd 覆盖值会盖掉这张表，所以 emitImpact 与各 emit 点
+//   也必须按同一比例改，只改这里是不够的。
 const KINDS = {
   spark: { drag: 1.6, gravity: 12, life: 0.42, size: 0.055, sizeEnd: 0.008, shape: 'stretch', alpha: 1 },
   sparkHeavy: { drag: 1.1, gravity: 16, life: 0.7, size: 0.09, sizeEnd: 0.012, shape: 'stretch', alpha: 1 },
   debris: { drag: 1.2, gravity: 22, life: 1.3, size: 0.11, sizeEnd: 0.06, shape: 'stretch', alpha: 1 },
-  smoke: { drag: 1.4, gravity: -1.4, life: 1.5, size: 0.35, sizeEnd: 1.5, shape: 'billboard', alpha: 0.5 },
-  dust: { drag: 1.9, gravity: -0.7, life: 1.1, size: 0.28, sizeEnd: 1.05, shape: 'billboard', alpha: 0.36 },
+  smoke: { drag: 1.4, gravity: -1.4, life: 1.5, size: 0.09, sizeEnd: 0.36, shape: 'billboard', alpha: 0.32 },
+  dust: { drag: 1.9, gravity: -0.7, life: 1.1, size: 0.07, sizeEnd: 0.26, shape: 'billboard', alpha: 0.24 },
   blood: { drag: 1.5, gravity: 16, life: 0.65, size: 0.14, sizeEnd: 0.05, shape: 'billboard', alpha: 0.9 },
-  bloodMist: { drag: 2.4, gravity: 2.0, life: 0.45, size: 0.35, sizeEnd: 0.7, shape: 'billboard', alpha: 0.45 },
+  bloodMist: { drag: 2.4, gravity: 2.0, life: 0.45, size: 0.09, sizeEnd: 0.18, shape: 'billboard', alpha: 0.32 },
   shield: { drag: 2.2, gravity: 3, life: 0.4, size: 0.16, sizeEnd: 0.02, shape: 'stretch', alpha: 1 },
   shieldHit: { drag: 3.0, gravity: 0, life: 0.28, size: 0.1, sizeEnd: 0.02, shape: 'stretch', alpha: 1 },
   muzzle: { drag: 4.0, gravity: 3, life: 0.16, size: 0.14, sizeEnd: 0.03, shape: 'stretch', alpha: 1 },
   ring: { drag: 0, gravity: 0, life: 0.4, size: 0.6, sizeEnd: 4.6, shape: 'ring', alpha: 0.85 },
   ringSmall: { drag: 0, gravity: 0, life: 0.26, size: 0.25, sizeEnd: 1.5, shape: 'ring', alpha: 0.7 },
-  explosion: { drag: 2.6, gravity: 4, life: 0.55, size: 0.55, sizeEnd: 2.6, shape: 'billboard', alpha: 0.85 },
-  muzzleSmoke: { drag: 1.6, gravity: -1.2, life: 1.0, size: 0.16, sizeEnd: 0.85, shape: 'billboard', alpha: 0.22 },
+  explosion: { drag: 2.6, gravity: 4, life: 0.55, size: 0.16, sizeEnd: 0.7, shape: 'billboard', alpha: 0.72 },
+  muzzleSmoke: { drag: 1.6, gravity: -1.2, life: 1.0, size: 0.05, sizeEnd: 0.22, shape: 'billboard', alpha: 0.18 },
   trail: { drag: 0.9, gravity: 0, life: 0.5, size: 0.1, sizeEnd: 0.02, shape: 'stretch', alpha: 0.7 },
   energy: { drag: 2.8, gravity: 0, life: 0.5, size: 0.09, sizeEnd: 0.01, shape: 'stretch', alpha: 1 },
   scorch: { drag: 3.2, gravity: 5, life: 0.9, size: 0.2, sizeEnd: 0.02, shape: 'stretch', alpha: 1 },

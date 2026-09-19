@@ -110,6 +110,9 @@ if (hasRepoCert) {
 }
 
 await control.close().catch(() => {});
-page.close();
+await new Promise((resolve) => page.close(resolve));
 console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-process.exit(fail > 0 ? 1 : 0);
+// 不能立刻 process.exit：HTTP server 的异步 handle 还在收尾，
+// 提前退出会触发 libuv 断言（Windows 上表现为 0xC0000409 / UV_HANDLE_CLOSING）。
+// 让事件循环自然排空后再定退出码。
+process.exitCode = fail > 0 ? 1 : 0;

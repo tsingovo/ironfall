@@ -519,8 +519,11 @@ export class LanSession {
     if (msg && msg.t === SRV.WELCOME) {
       this.hostId = msg.hostId;
       this.roomId = msg.room;
+      // 人数上限用于"队友加入"播报里的 x/N；服务器两条消息都会带。
+      if (Number(msg.maxPeers) > 0) this._maxPeers = Number(msg.maxPeers);
     } else if (msg && msg.t === SRV.ROSTER) {
       this.hostId = msg.hostId;
+      if (Number(msg.maxPeers) > 0) this._maxPeers = Number(msg.maxPeers);
     }
     this.role = this.hostId === this.selfId ? LAN_ROLE.HOST : LAN_ROLE.GUEST;
     this._applyRoster(msg);
@@ -533,6 +536,12 @@ export class LanSession {
   _applyRoster(msg) {
     const peers = (msg && msg.peers) || [];
     this.roster = peers;
+    // 记录本次名册变化，用于给房主/房客播报。
+    // 之前 lastEvent 只写进 debugState()（只有按 F3 的调试面板能看到），
+    // 玩家侧完全没有提示 —— 表现就是「队友进了房间，房主界面毫无反应」。
+    // 这里改为主动播报，并带上房间人数，让房主一眼知道有人进来了。
+    const joined = [];
+    const left = [];
     const seen = new Set();
     let index = 0;
     for (const p of peers) {
@@ -544,6 +553,7 @@ export class LanSession {
         this.remotes.set(p.id, r);
         this._wireRemoteDamage(r);
         this.lastEvent = `${p.name} 加入了房间`;
+        joined.push(p.name || '队友');
       }
       r.name = p.name;
       r.isHost = !!p.isHost;
@@ -556,7 +566,22 @@ export class LanSession {
         r.markStale();
         this.remotes.delete(id);
         this.lastEvent = `${r.name} 离开了房间`;
+        left.push(r.name || '队友');
       }
+    }
+
+    // 播报：加入是房主最需要知道的（否则一直干等），离开也要提示。
+    if (joined.length) {
+      // 人数上限从服务器名册里取（welcome/roster 都带 maxPeers），拿不到就退化为 4。
+      const cap = (msg && Number(msg.maxPeers)) || (this._maxPeers || 4);
+      if (Number.isFinite(cap) && cap > 0) this._maxPeers = cap;
+      if (this.onNotice) {
+        this.onNotice('队友加入', `${joined.join('、')} · 当前 ${peers.length}/${this._maxPeers || 4} 人`, 'good');
+      }
+      Events.emit('audio:play', { name: 'ui_click' });
+    }
+    for (const name of left) {
+      if (this.onNotice) this.onNotice('队友离开', name, 'warn');
     }
   }
 
@@ -610,6 +635,11 @@ export class LanSession {
         r.heldItem = typeof data.item === 'string' ? data.item : r.weaponId;
         r.pveDeaths = Math.max(0, Number(data.deaths) || 0);
         r.eliminated = !!data.eliminated;
+        // 交互 / 治疗标志：房主用它把队友的按住算进任务进度与撤离读条；
+        // 也用它在队友身上显示"正在打药"。netId 供 HUD 区分是谁在推。
+        r.interacting = (decoded.flags & FLAG.INTERACT) !== 0;
+        r.healingActive = (decoded.flags & FLAG.HEALING) !== 0;
+        r.netId = from;
         r.grapple.active = !!decoded.grappling && validVec(data.g);
         if (r.grapple.active) r.grapple.point = data.g.slice(0, 3);
         break;
@@ -704,6 +734,9 @@ export class LanSession {
         if (!o) continue;
         o.progress = row[1];
         o.done = !!row[2];
+        // row[3] 是"谁正在交互"：'s' 表示房主本人，其余是 peerId。
+        // 只用于表现层（读条上显示队友在夺取），不参与进度计算。
+        o.interactBy = row[3] === 's' ? 'self' : (row[3] || null);
       }
     }
     if (Number.isFinite(data.x)) run.extractHold = data.x;
@@ -711,6 +744,58 @@ export class LanSession {
     // （run.js 的 `remaining === 0 && !this.bossPending`）。房客的导演是停的，
     // 永远不会自己清掉这个标志，不同步就会卡在第 3/6/10 层永远无法撤离。
     if (typeof data.b === 'number') run.bossPending = data.b === 1;
+    this._applyDropList(data.d);
+  }
+
+  /**
+   * 客机应用房主的掉落列表（**替换语义**）。
+   *
+   * 为什么用替换而不是增量：
+   *   · 队友捡走 / 物品过期会自然消失，不需要额外的"移除"消息
+   *   · 丢包或中途加入都能自愈，不会留下幽灵掉落
+   *   · 所有掉落（敌人掉落、任务奖励）都统一以房主为准，不需要逐一判断来源
+   * 位置用 set 原地更新，避免每 0.5 秒重建 Float32Array 造成的持续分配。
+   */
+  _applyDropList(rows) {
+    const inv = this.game && this.game.inventory;
+    if (!inv || !Array.isArray(inv.drops) || !Array.isArray(rows)) return;
+    const live = inv.drops;
+    const have = new Map();
+    for (const d of live) if (d && Number.isFinite(d.uid)) have.set(d.uid | 0, d);
+
+    const keep = [];
+    for (const row of rows) {
+      if (!Array.isArray(row) || row.length < 6) continue;
+      const uid = row[0] | 0;
+      const itemId = String(row[1] || '');
+      if (!itemId) continue;
+      let d = have.get(uid);
+      if (d && d.itemId !== itemId) d = null;          // uid 复用但物品变了：当作新掉落
+      if (d) {
+        have.delete(uid);
+        if (d.pos) { d.pos[0] = row[3]; d.pos[1] = row[4]; d.pos[2] = row[5]; }
+        d.count = row[2] === -1 ? Infinity : Math.max(1, row[2] | 0);
+        d.netSynced = true;
+        keep.push(d);
+      } else {
+        const created = inv.spawn(itemId, row[2] === -1 ? 1 : Math.max(1, row[2] | 0),
+          [row[3], row[4], row[5]], { yaw: row[6] || 0 });
+        if (created) {
+          // 用房主的 uid，两端才对得上（本地 _nextDropId 各自独立）
+          created.uid = uid;
+          created.netSynced = true;
+          keep.push(created);
+        }
+      }
+    }
+
+    // 房主已经拿走的掉落：本地直接退役（本地拾取时只从自己的列表里删，需要这里补齐）
+    for (const d of have.values()) {
+      if (d && d.netSynced) d.netRemoved = true;
+    }
+    live.length = 0;
+    for (const d of keep) live.push(d);
+    if (inv.nearDrop && !live.includes(inv.nearDrop)) inv.nearDrop = null;
   }
 
   _onWorldEvent(from, data) {
@@ -725,13 +810,14 @@ export class LanSession {
         break;
       case EV.ENEMY_DEATH: {
         // 本地已经通过快照知道敌人死了；这里只处理“击杀归谁”这一层：
-        // 击杀者本机结算奖励与掉落，其他人只补一条播报。
+        // 击杀者本机结算奖励，其他人只补一条播报。
         const e = game.enemies && game.enemies.findByNetId(data.id | 0);
         if (data.by === this._t.selfId) {
           if (typeof game.applyKillRewards === 'function') game.applyKillRewards(!!data.hs);
-          // spawnEnemyDrop 的掉落表只由 enemy.id 决定，且地面高度来自同种子地图，
-          // 因此各端各自生成结果一致，不需要额外的掉落同步消息。
-          if (e && game.inventory && typeof game.inventory.spawnEnemyDrop === 'function') {
+          // 掉落物统一由**房主**生成并随单局状态广播（见 _snapshotDrops）。
+          // 客机若也在本地生成，两端会各掉一份、uid 还对不上，队友就看不到
+          // 或者看到重影。所以这里只在房主身份下本地生成。
+          if (this.isHost && e && game.inventory && typeof game.inventory.spawnEnemyDrop === 'function') {
             game.inventory.spawnEnemyDrop(e, game.world);
           }
           if (game.hud && typeof game.hud.addKill === 'function') {
@@ -939,7 +1025,9 @@ export class LanSession {
     if (Array.isArray(run.objectives)) {
       for (let i = 0; i < run.objectives.length; i++) {
         const o = run.objectives[i];
-        obj.push([i, q2(o.progress || 0), o.done ? 1 : 0]);
+        // who：当前正在交互的玩家（房主自己是 'self'，远程玩家是 peerId），
+        // 让各端能在读条上显示"队友正在夺取"，而不是两条进度各走各的。
+        obj.push([i, q2(o.progress || 0), o.done ? 1 : 0, o.interactBy === 'self' ? 's' : (o.interactBy || '')]);
       }
     }
     this._t.sendGame({
@@ -948,7 +1036,26 @@ export class LanSession {
       o: obj,
       x: q2(run.extractHold || 0),
       b: run.bossPending ? 1 : 0,
+      // 掉落物：**完整列表**，客机直接替换而非合并。
+      // 这样"被队友捡走""物品过期"都会自然同步，且列表自愈、不会留幽灵掉落。
+      // 敌人掉落的物品由 enemy.id 决定（确定性），因此各端算出的是同一件东西；
+      // 任务奖励掉落则本来就只在房主侧结算。全部以房主为准。
+      d: this._snapshotDrops(),
     });
+  }
+
+  /** 把本机掉落列表压成可传输的紧凑数组（uid 用于客机去重/替换） */
+  _snapshotDrops() {
+    const inv = this.game && this.game.inventory;
+    if (!inv || !Array.isArray(inv.drops)) return [];
+    const out = [];
+    for (let i = 0; i < inv.drops.length && out.length < 120; i++) {
+      const d = inv.drops[i];
+      if (!d || !d.itemId || !d.pos) continue;
+      out.push([d.uid | 0, d.itemId, d.count === Infinity ? -1 : (d.count | 0),
+        q2(d.pos[0]), q2(d.pos[1]), q2(d.pos[2]), q4(d.yaw || 0)]);
+    }
+    return out;
   }
 
   /** 房主：把“本地玩家 + 所有远程玩家代理”交给敌人 AI 做目标选择 */

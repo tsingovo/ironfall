@@ -168,6 +168,13 @@ export const FLAG = Object.freeze({
   FIRING: 1 << 6,
   GRAPPLE: 1 << 7,
   SPRINTING: 1 << 8,
+  // 正在按住交互键做任务（夺取/破坏/回收）或撤离读条。
+  // 房主据此把队友的互动也算进任务进度 —— 否则只有房主按住能涨进度，
+  // 表现就是「队友按 E 没反应 / 任务进度不共享」。
+  INTERACT: 1 << 9,
+  // 正在使用治疗道具（医疗包/护盾电池/注射器/护盾电池组）。
+  // 队友据此看到「对方在打药」，并在命中状态条上体现。
+  HEALING: 1 << 10,
 });
 
 /** 世界事件种类 */
@@ -255,6 +262,10 @@ export function createCodec(tables = {}) {
     // 系统自身的 _triggerHeld 上（见 weapons.js 的 update()）。
     if (weapons && weapons._triggerHeld) flags |= FLAG.FIRING;
     if (s.grappleActive || (player.grapple && player.grapple.active)) flags |= FLAG.GRAPPLE;
+    // 交互与治疗状态由主循环每步写在 player 上（main.js 的 _objectiveInteractors /
+    // 治疗读条）。上报后房主才能把队友的按住算进任务进度，各端也能显示队友在打药。
+    if (player.interacting) flags |= FLAG.INTERACT;
+    if (player.healing && player.healing.useActive) flags |= FLAG.HEALING;
 
     out[0] = q2(player.pos[0]);
     out[1] = q2(player.pos[1]);
