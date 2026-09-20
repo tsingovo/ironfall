@@ -1069,6 +1069,53 @@ const SOUNDS = {
 
   // ---------------- 命中 ----------------
 
+  // ---------------- 脚步声（需求 9）----------------
+  //
+  // 需求：「所有怪物以及玩家增加脚步声」。
+  //
+  // 设计要点：
+  //   · 脚步声是**高频重复**音（跑起来每秒 2~3 步），所以 gain 必须压得低、
+  //     并且靠 minGap + limit 做节流，否则会和枪声抢注意力、也会糊成一片噪音。
+  //   · 玩家自己的最响（贴身反馈），敌人按体型分三档：
+  //     重型落地更闷更沉、轻型（虫群/爆蛛）更碎更尖。
+  //   · pitchVar 给得比其他音效大，让连续脚步不会听起来像机械循环。
+  //   · 每次触发时调用方会传随机 rate，配合 pitchVar 得到自然的步态变化。
+  footstep_player: {
+    bus: 'sfx', gain: 0.34, dur: 0.18, limit: 3, minGap: 0.12, priority: 1,
+    pitchVar: 0.14, brightVar: 0.2,
+    build(v, t0, p) {
+      const br = p.br;
+      // 鞋底拍击：低频闷响 + 短促宽频噪声
+      thump(v, t0, { from: 150 * p.pi, to: 62 * p.pi, dur: 0.09, gain: 0.3, drive: 1.6 });
+      noiseBurst(v, t0, {
+        freq: 1500 * br, to: 520, q: 0.9, dur: 0.07, gain: 0.16, type: 'bandpass',
+      });
+      // 外骨骼的金属部件轻响，让"机械外骨骼"这个设定有声音依据
+      click(v, t0 + 0.012, { freq: 3400 * br, q: 1.4, dur: 0.005, gain: 0.07, type: 'highpass' });
+    },
+  },
+
+  // 重型敌人（重装兵 / 盾卫 / 蛛皇）：更沉、更闷、尾音更长
+  footstep_heavy: {
+    bus: 'sfx', gain: 0.3, dur: 0.3, limit: 3, minGap: 0.14, priority: 1,
+    pitchVar: 0.12, brightVar: 0.16,
+    build(v, t0, p) {
+      thump(v, t0, { from: 96 * p.pi, to: 42 * p.pi, dur: 0.16, gain: 0.34, drive: 2.2 });
+      noiseBurst(v, t0, { freq: 700 * p.br, to: 260, q: 0.8, dur: 0.13, gain: 0.13, type: 'lowpass' });
+    },
+  },
+
+  // 轻型敌人（虫群 / 爆蛛 / 无人机）：更碎、更尖、更短
+  footstep_light: {
+    bus: 'sfx', gain: 0.22, dur: 0.11, limit: 3, minGap: 0.1, priority: 1,
+    pitchVar: 0.22, brightVar: 0.28,
+    build(v, t0, p) {
+      const br = p.br;
+      noiseBurst(v, t0, { freq: 2600 * br, to: 1100, q: 1.1, dur: 0.05, gain: 0.14, type: 'bandpass' });
+      click(v, t0, { freq: 4200 * br, q: 1.6, dur: 0.004, gain: 0.1, type: 'highpass' });
+    },
+  },
+
   hit_flesh: {
     bus: 'sfx', gain: 0.5, dur: 0.24, limit: 6, minGap: 0.006, mergeMax: 3,
     priority: 2, pitchVar: 0.04, brightVar: 0.12,

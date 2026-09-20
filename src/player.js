@@ -1706,6 +1706,9 @@ export class Player {
     // 护盾再生
     this._regenShield(dt);
 
+    // 需求 9：玩家脚步声。
+    this._updateFootsteps(dt, s);
+
     // 地图边界兜底：大部分原型没有外围墙，跑出地形网格就没有任何几何可碰撞，
     // 会直接掉进虚空且回不来。这里硬性夹回范围内，并把朝外的速度分量清零，
     // 否则玩家会一直贴着边界"顶着墙跑"。详见 world.clampToBounds 的注释。
@@ -1722,6 +1725,40 @@ export class Player {
     if (pushed & 1) this.vel[0] = 0;
     if (pushed & 2) this.vel[2] = 0;
     return true;
+  }
+
+  /**
+   * 需求 9：玩家脚步声。
+   *
+   * 用**步距累积**而不是固定计时器：速度越快、同样距离内步频越高，
+   * 这是自然的耦合 —— 慢走时脚步稀疏，冲刺时密集。
+   *
+   * 只在"身体贴地且水平移动"时迈步：
+   *   · 滑铲不迈步（滑行本身有摩擦音）
+   *   · 蹬墙跑不迈步（贴着墙，脚不落地）
+   *   · 空中不迈步（落地那一下由 land 音效负责）
+   */
+  _updateFootsteps(dt, s) {
+    const STEP_DISTANCE = 2.15;               // 每迈一步覆盖的距离（米）
+    const MIN_SPEED = 1.2;                    // 低于这个速度不算在走
+    if (!s.grounded || s.sliding || s.wallRunning || s.mantling) {
+      this._stepDist = 0;                     // 中断累积，避免落地瞬间连响几声
+      return;
+    }
+    const hs = s.hspeed || 0;
+    if (hs < MIN_SPEED) { this._stepDist = 0; return; }
+
+    this._stepDist = (this._stepDist || 0) + hs * dt;
+    if (this._stepDist < STEP_DISTANCE) return;
+    this._stepDist = 0;
+
+    const fast = hs > 8;                      // 冲刺时略响，让"有人在冲过来"能被听到
+    Events.emit('audio:play', {
+      name: 'footstep_player',
+      pos: [this.pos[0], this.pos[1] + 0.1, this.pos[2]],
+      gain: fast ? 0.5 : 0.34,
+      rate: 0.94 + Math.random() * 0.16,
+    });
   }
 
   _regenShield(dt) {

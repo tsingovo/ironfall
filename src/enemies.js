@@ -251,6 +251,11 @@ export class EnemySystem {
     this.replicated = false;
     // 房客侧待上报给房主的命中队列（扁平数组，零分配追加）。
     this.hitReports = [];
+
+    // 需求 9：怪物脚步声开关。
+    // 默认开启；自测里可以关掉，避免几百只虫群同时迈步刷出巨量音频事件
+    // （音频系统本身有节流，但事件与合成调用在纯逻辑测试里没有意义）。
+    this.audioEnabled = true;
   }
 
   /** 联机：设置参与仇恨的玩家集合（本机玩家 + 远程玩家代理） */
@@ -1742,6 +1747,50 @@ export class EnemySystem {
 
     // 动画相位（走路摆动）
     e.animPhase += Math.hypot(e.vel[0], e.wallNormal ? e.vel[1] : 0, e.vel[2]) * dt * 2.6;
+
+    // 需求 9：怪物脚步声。
+    this._updateEnemyFootsteps(e, dt);
+  }
+
+  /**
+   * 需求 9：敌人脚步声。
+   *
+   * 用**步距累积**（和玩家同一套思路）：速度越快步频越高，天然耦合。
+   * 按体型分三档音色，让玩家能"听出正在靠近的是什么"：
+   *   重型（重装兵/盾卫/蛛皇）→ footstep_heavy（沉、闷）
+   *   轻型（虫群/爆蛛/无人机）→ footstep_light（碎、尖）
+   *   其余人形            → footstep_player 的变体（音高更低一点）
+   *
+   * 跳过：飞行单位、贴墙攀爬中（脚不落地）、已死亡、以及房客
+   *      （房客的敌人位置由房主快照驱动，本地放脚步会与位置对不上）。
+   */
+  _updateEnemyFootsteps(e, dt) {
+    if (!this.audioEnabled) return;
+    if (this.replicated) return;
+    if (!e.alive || e.type.flying) return;
+    if (!e.grounded || e.wallNormal) { e.stepDist = 0; return; }
+
+    const hs = Math.hypot(e.vel[0], e.vel[2]);
+    if (hs < 1.0) { e.stepDist = 0; return; }
+    // 体型越大步幅越大 —— 否则大怪会听起来像小碎步
+    const stride = 1.5 + (e.height || 1.8) * 0.55;
+    e.stepDist = (e.stepDist || 0) + hs * dt;
+    if (e.stepDist < stride) return;
+    e.stepDist = 0;
+
+    const t = e.type;
+    let name = 'footstep_player';
+    // 重型：高体型或重装/盾卫；轻型：虫群/爆蛛
+    if (t.meshKind === 'heavy' || t.hybridBoss || (e.height || 0) >= 2.0) name = 'footstep_heavy';
+    else if (t.swarm || t.meshKind === 'spider' || t.meshKind === 'crawler' || t.flying) name = 'footstep_light';
+
+    Events.emit('audio:play', {
+      name,
+      pos: [e.pos[0], e.pos[1] + 0.1, e.pos[2]],
+      // 敌人脚步比玩家轻：它是"方位提示"，不该盖过枪声
+      gain: name === 'footstep_heavy' ? 0.3 : 0.2,
+      rate: 0.92 + Math.random() * 0.16,
+    });
   }
 
   /**

@@ -384,7 +384,11 @@ class Game {
     const on = (type, fn) => this._events.push(Events.on(type, fn));
 
     on('audio:play', (p) => {
-      if (p.pos) Audio.playAt(p.name, p.pos, this.player.eyePos, { gain: p.gain });
+      // 注意：带 pos 的音效也必须把 rate 传下去。
+      // 这里原来写的是 `playAt(p.name, p.pos, eyePos, { gain: p.gain })` —— 漏了 rate，
+      // 于是所有**带位置**的音效（敌人脚步、敌人开火、各类命中）播放速率恒为 1，
+      // 调用方传的 rate 被静默丢弃。playAt 本身是支持 rate 的。
+      if (p.pos) Audio.playAt(p.name, p.pos, this.player.eyePos, { gain: p.gain, rate: p.rate });
       else Audio.play(p.name, { gain: p.gain, rate: p.rate });
     });
     // 禁用额外屏幕震动；武器 recoil 独立保留。
