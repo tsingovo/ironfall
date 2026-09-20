@@ -1294,6 +1294,37 @@ class Game {
     if (!p.extracted) this._respawnTimer = 12;
   }
 
+  /**
+   * 渲染一帧，并兜住异常 —— 单帧错误不得让整局变成"画面卡死"。
+   *
+   * 背景：frame() 在最开头就重新调度了 rAF，所以"抛异常导致循环停摆"其实不会发生；
+   * 真正的问题是**每帧都抛**的异常会让画面永久定格在最后一帧，同时 HUD/输入同步
+   * 全部跳过，玩家的体感与"卡死"完全一致（本项目真实踩过：cameraPos is not defined
+   * 直接导致白屏）。
+   *
+   * 这里做三件事：
+   *   1. 吞掉异常，保证本帧余下的收尾逻辑（Input.endFrame 等）仍会执行
+   *   2. 限频上报（每秒最多一条），避免每帧刷爆控制台反而拖慢游戏
+   *   3. 记到 debugFlags，供 F3 面板与自动化诊断读取
+   */
+  _renderSafely(dt) {
+    try {
+      this.renderFrame(dt);
+      this._renderErrorCount = 0;
+      return true;
+    } catch (err) {
+      this._renderErrorCount = (this._renderErrorCount || 0) + 1;
+      this._lastRenderError = err;
+      const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      if (!this._renderErrorLoggedAt || now - this._renderErrorLoggedAt > 1000) {
+        this._renderErrorLoggedAt = now;
+        // eslint-disable-next-line no-console
+        console.error('[IRONFALL] 渲染帧异常（已兜住，游戏继续）:', err);
+      }
+      return false;
+    }
+  }
+
   /** 从仓库原子取出全部上次战利品，作为下一次部署物资。 */
   _consumeDeploymentCarry() {
     if (!this.meta || typeof this.meta.stashSnapshot !== 'function'
@@ -1405,7 +1436,25 @@ class Game {
   _handleGlobalKeys() {
     if (Input.actionPressed('pause')) {
       if (this.lan?.active && !this.player.alive) {
-        if (this.menuKind === 'lan-dead' && !this._allLanFailed) this.spectateLan();
+        if (this._allLanFailed) {
+          // 全队已失败：既不能观战（没有活着的队友），也不能靠
+          // openMenuPanel('lan-dead') 再开一次 —— menuKind 已经是 lan-dead，
+          // openMenuPanel 会因 `this.menuKind === kind` 直接 return false。
+          // 早先这里落进死胡同：**Esc 完全失效，玩家只能刷新页面**，
+          // 体感就是"画面卡死"。
+          //
+          // 注意不能调 closeMenuPanel()：全队失败时 _playing 为 false，
+          // 关掉菜单后 _updateLanDeathState 下一帧又会把 lan-dead 推回来，
+          // 形成"关掉又弹回"的循环。所以只**换菜单内容**，让玩家能回到主界面
+          // 重新部署 / 重开房间。
+          if (this.hud && this.hud._menu !== 'main') {
+            this.hud.showMenu('main');
+            this.menuKind = null;
+            this._syncMenuState();
+          }
+          return;
+        }
+        if (this.menuKind === 'lan-dead') this.spectateLan();
         else this.openMenuPanel('lan-dead', { freeze: false });
         return;
       }
@@ -1869,7 +1918,7 @@ class Game {
       // 暂停时仍然渲染（菜单背景），但不推进物理。
       // 同时同步 body 类名，让菜单期间恢复系统光标。
       this._syncMenuState();
-      this.renderFrame(dt);
+      this._renderSafely(dt);
       Input.endFrame();
       return;
     }
@@ -1891,7 +1940,7 @@ class Game {
         Input.endFrame();
         return;
       }
-      this.renderFrame(dt);
+      this._renderSafely(dt);
       Input.endFrame();
       return;
     }
@@ -1942,7 +1991,11 @@ class Game {
     if (steps >= MAX_STEPS_PER_FRAME) this.accumulator = 0;
 
     // ---- 渲染帧
-    this.renderFrame(dt);
+    // 单帧异常绝不能冻死整局：rAF 在 frame() 开头就已重新调度，但一帧里抛出的
+    // 异常会让这一帧之后的 HUD/输入同步全部跳过；如果异常每帧都发生（例如某个
+    // 访问了 undefined 的属性），画面就会定格在最后一帧，玩家体感是"画面卡死"。
+    // 这里兜住并限频上报，至少保证循环活着、玩家还能按 Esc 退出。
+    this._renderSafely(dt);
     // 固定步频低于显示刷新率时，某些渲染帧可能还没有物理步（例如 240Hz
     // 显示器上的每隔一帧）。不能在这里清掉 justPressed/鼠标增量，否则 1/2/3
     // 切枪、R 换弹等边沿动作会随机丢失，玩家就会感觉“要按好几下才切上”。
