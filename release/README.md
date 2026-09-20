@@ -1,10 +1,10 @@
-# IRONFALL 发行包 · 2.1.6
+# IRONFALL 发行包 · 2.1.7
 
-本地包：`IRONFALL-2.1.6-offline.zip`（805.8 KB）
-SHA-256：`771377336FCE9282419ADBA20132E2871A042538996A690FD15A9B6DD7B19043`
+本地包：`IRONFALL-2.1.7-offline.zip`（826.5 KB）
+SHA-256：`4FFDB9733AEF96430E087F77484D41367C081ECE7DA7341A2E54FC5E29A1B330`
 
 ```powershell
-Get-FileHash .\IRONFALL-2.1.6-offline.zip -Algorithm SHA256   # 校验下载是否完整
+Get-FileHash .\IRONFALL-2.1.7-offline.zip -Algorithm SHA256   # 校验下载是否完整
 ```
 
 > 尚未上传到线上发行版。上传时注意：
