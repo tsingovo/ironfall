@@ -36,6 +36,17 @@ export class ProjectilePool {
     this.gravity = new Float32Array(capacity);
     this.damage = new Float32Array(capacity);
     this.ownerId = new Int32Array(capacity);
+    // 需求 8 / 第 10 关：敌方大型子弹
+    //   · hp           —— 血量 1，被玩家子弹命中即消失（"玩家射击可击破"）
+    //   · interceptable—— 是否允许被玩家火力拦截
+    //   · homing       —— 是否追踪玩家
+    //   · speed0       —— 基准速度（HOMING 转向时保持模长不变）
+    //   · delayed      —— 延迟多久才出现（用于"一次齐射"错开时间）
+    this.hp = new Float32Array(capacity);
+    this.interceptable = new Uint8Array(capacity);
+    this.homing = new Uint8Array(capacity);
+    this.speed0 = new Float32Array(capacity);
+    this.delayed = new Float32Array(capacity);
     this.cr = new Float32Array(capacity);
     this.cg = new Float32Array(capacity);
     this.cb = new Float32Array(capacity);
@@ -116,6 +127,13 @@ export class ProjectilePool {
     this.gravity[i] = o.gravity == null ? 0 : o.gravity;
     this.damage[i] = o.damage == null ? 0 : o.damage;
     this.ownerId[i] = o.ownerId == null ? 0 : o.ownerId;
+    // 需求 8 / 第 10 关：可击破的敌方大型子弹 + 追踪
+    //   hp>0 表示这颗子弹会被玩家火力打掉（"玩家射击可击破，子弹血量为 1"）
+    this.hp[i] = o.hp == null ? 0 : o.hp;
+    this.interceptable[i] = o.hp > 0 ? 1 : 0;
+    this.homing[i] = o.homing ? 1 : 0;
+    this.speed0[i] = speed;
+    this.delayed[i] = o.delayed == null ? 0 : o.delayed;
     const c = o.color || CFG.fx.sparkColor;
     this.cr[i] = c[0]; this.cg[i] = c[1]; this.cb[i] = c[2];
     return i;
@@ -249,7 +267,11 @@ export class ProjectilePool {
 
   // ---------------------------------------------------------------- 更新
 
-  update(dt, world, enemies) {
+  /**
+   * @param intercepts 本帧玩家的射击射线数组（可选），每项 {ox,oy,oz,dx,dy,dz,len}。
+   *   用于实现需求 8 第 10 关的"玩家射击可击破敌方子弹"。
+   */
+  update(dt, world, enemies, intercepts) {
     // 曳光衰减
     let w = 0;
     for (let i = 0; i < this.tracerCount; i++) {
@@ -277,6 +299,77 @@ export class ProjectilePool {
     // 弹丸推进（用射线步进避免穿透）
     let k = 0;
     for (let i = 0; i < this.count; i++) {
+      // 延迟出现（需求 8 第 10 关的"一次齐射"用它错开发射时间）
+      if (this.delayed[i] > 0) {
+        this.delayed[i] -= dt;
+        if (this.delayed[i] > 0) {
+          // 还没出场：原地等待，但保持存活（要复制到新数组，故不 continue）
+          this.px[k] = this.px[i]; this.py[k] = this.py[i]; this.pz[k] = this.pz[i];
+          this.vx[k] = this.vx[i]; this.vy[k] = this.vy[i]; this.vz[k] = this.vz[i];
+          this.life[k] = this.life[i]; this.maxLife[k] = this.maxLife[i];
+          this.width[k] = this.width[i]; this.gravity[k] = this.gravity[i];
+          this.damage[k] = this.damage[i]; this.ownerId[k] = this.ownerId[i];
+          this.hp[k] = this.hp[i]; this.interceptable[k] = this.interceptable[i];
+          this.homing[k] = this.homing[i]; this.speed0[k] = this.speed0[i];
+          this.delayed[k] = this.delayed[i];
+          this.cr[k] = this.cr[i]; this.cg[k] = this.cg[i]; this.cb[k] = this.cb[i];
+          k++;
+          continue;
+        }
+      }
+
+      // 追踪（需求 8 第 10 关：熔岩守卫者的子弹追踪玩家）。
+      // 用"朝目标转向有限角度"而不是直接对准：保留慢速、可躲的手感，
+      // 追踪能力过强会变成无法规避的必中弹。
+      if (this.homing[i] && enemies && typeof enemies.players !== 'undefined') {
+        const pl = (enemies.players && enemies.players[0]) || null;
+        if (pl && pl.alive !== false && pl.pos) {
+          const sp = Math.hypot(this.vx[i], this.vy[i], this.vz[i]) || this.speed0[i];
+          let tx = pl.pos[0] - this.px[i];
+          let ty = (pl.pos[1] + 0.9) - this.py[i];
+          let tz = pl.pos[2] - this.pz[i];
+          const L = Math.hypot(tx, ty, tz) || 1;
+          tx /= L; ty /= L; tz /= L;
+          const cx = this.vx[i] / sp, cy = this.vy[i] / sp, cz = this.vz[i] / sp;
+          const maxRad = 1.9 * dt;          // 每秒约 109°，明显能躲
+          const dot = Math.max(-1, Math.min(1, cx * tx + cy * ty + cz * tz));
+          const ang = Math.acos(dot);
+          if (ang > 1e-4) {
+            const f = Math.min(1, maxRad / ang);
+            let nx = cx + (tx - cx) * f;
+            let ny = cy + (ty - cy) * f;
+            let nz = cz + (tz - cz) * f;
+            const NL = Math.hypot(nx, ny, nz) || 1;
+            this.vx[i] = nx / NL * sp;
+            this.vy[i] = ny / NL * sp;
+            this.vz[i] = nz / NL * sp;
+          }
+        }
+      }
+
+      // 需求 8：可击破的敌方子弹 —— 被玩家火力命中即消失。
+      // 判定放在推进之前：本帧玩家打出的曳光只要落在这颗子弹附近就算拦截，
+      // 用球体近似（子弹体积大，容差给 0.9m）。
+      if (this.interceptable[i] && intercepts && intercepts.length) {
+        let stopped = false;
+        for (let q = 0; q < intercepts.length; q++) {
+          const s = intercepts[q];
+          const ddx = s.ox - this.px[i], ddy = s.oy - this.py[i], ddz = s.oz - this.pz[i];
+          // 玩家射线到子弹的最近距离（用射线-点距离近似）
+          const along = ddx * s.dx + ddy * s.dy + ddz * s.dz;
+          if (along < 0 || along > s.len) continue;
+          const cx2 = ddx - s.dx * along, cy2 = ddy - s.dy * along, cz2 = ddz - s.dz * along;
+          if (cx2 * cx2 + cy2 * cy2 + cz2 * cz2 <= 0.9 * 0.9) { stopped = true; break; }
+        }
+        if (stopped) {
+          this.hp[i] -= 1;
+          if (this.hp[i] <= 0) {
+            if (this.onIntercepted) this.onIntercepted(this.px[i], this.py[i], this.pz[i]);
+            continue;                       // 销毁
+          }
+        }
+      }
+
       this.vy[i] -= this.gravity[i] * dt;
       const dx = this.vx[i] * dt, dy = this.vy[i] * dt, dz = this.vz[i] * dt;
       const dist = Math.hypot(dx, dy, dz);
@@ -314,6 +407,9 @@ export class ProjectilePool {
         this.life[k] = this.life[i]; this.maxLife[k] = this.maxLife[i];
         this.width[k] = this.width[i]; this.gravity[k] = this.gravity[i];
         this.damage[k] = this.damage[i]; this.ownerId[k] = this.ownerId[i];
+        this.hp[k] = this.hp[i]; this.interceptable[k] = this.interceptable[i];
+        this.homing[k] = this.homing[i]; this.speed0[k] = this.speed0[i];
+        this.delayed[k] = this.delayed[i];
         this.cr[k] = this.cr[i]; this.cg[k] = this.cg[i]; this.cb[k] = this.cb[i];
       }
       k++;

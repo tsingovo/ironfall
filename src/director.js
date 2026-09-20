@@ -25,6 +25,23 @@ const TIER_TABLES = [
   { grunt: 8, swarm: 6, shieldman: 6, flyer: 6, sniper: 3, heavy: 2 },
 ];
 
+/**
+ * 需求 8：第三关开始每关都有 boss。
+ *
+ * 第 3 关沿用既有的绿影蛛皇（需求里没要求换），第 4~10 关各一个专属 boss。
+ * 这里集中成一张表，便于调整顺序与提示文案。
+ */
+const TIER_BOSS = {
+  3:  { typeId: 'broodStalker',       scale: 1.6, hint: '击败首领才能完成本层目标' },
+  4:  { typeId: 'tier4ShieldMech',    scale: 1.0, hint: '正面护盾会挡住子弹 —— 绕到侧面或背后打' },
+  5:  { typeId: 'tier5Stalker',       scale: 1.0, hint: '它会瞬移。看地面裂痕，捶地前离开范围' },
+  6:  { typeId: 'tier6Dragon',        scale: 1.0, hint: '它在空中盘旋 —— 俯冲时才是输出窗口' },
+  7:  { typeId: 'tier7Vat',           scale: 1.0, hint: '打罐子没用。清掉 100 只哥布林，罐子会自己炸' },
+  8:  { typeId: 'tier8GhostKnight',   scale: 1.0, hint: '它会来回冲刺 —— 侧向躲开，不要正面接矛' },
+  9:  { typeId: 'tier9Boxer',         scale: 1.0, hint: '远程武器对它无效 —— 只能用近战或贴身输出' },
+  10: { typeId: 'tier10LavaGuardian', scale: 1.0, hint: '射击可以击落它的追踪弹' },
+};
+
 export class Director {
   constructor(world, enemies, player, opts = {}) {
     this.world = world;
@@ -75,7 +92,8 @@ export class Director {
     this._boss = null;
     this._bossId = null;
     this._bossPulse = 0;
-    this.run.bossPending = [3, 6, 10].includes(this.tier);
+    // 需求 8：第 3 关开始**每关都有 boss**（原本只有 3/6/10 三层）。
+    this.run.bossPending = this.tier >= 3;
     this._dpsWindow.length = 0;
     this._spawnHistory.length = 0;
     this._applyTier();
@@ -126,7 +144,8 @@ export class Director {
   _table() {
     const idx = Math.min(TIER_TABLES.length - 1, this.tier - 1);
     const base = TIER_TABLES[idx];
-    const bossFloor = [3, 6, 10].includes(this.tier);
+    // 需求 8 之后每层都有 boss，爆蛛的 BOSS 层加成也跟着对所有 boss 层生效
+    const bossFloor = this.tier >= 3;
     const total = Object.values(base).reduce((a,b)=>a+b,0);
     // Boss 关两种新怪合计约 90% 权重；普通关合计约 29%，受原并发/预算保护。
     //
@@ -136,6 +155,369 @@ export class Director {
     // 爆蛛不受影响，仍按原来的 BOSS 层加成逻辑走。
     const stalkerWeight = this.tier === 3 ? total * 4.5 : 0;
     return { ...base, stalker: stalkerWeight, blastSpider: total * (bossFloor ? 4.5 : 0.2) };
+  }
+
+  /**
+   * 需求 8：各关 boss 的专属行为分发。
+   *
+   * 通用的移动/开火/AI 仍由 EnemySystem 负责；这里只处理"每个 boss 独有"的机制，
+   * 这样既有战力与表现不变，新机制是叠加而不是替换。
+   */
+  _updateTierBoss(dt, boss) {
+    if (!boss || !boss.alive) return;
+    const k = boss.type.bossKind;
+    if (!k) return;
+    switch (k) {
+      case 'shieldMech': this._bossShieldMech(dt, boss); break;
+      case 'slenderKiller': this._bossSlenderKiller(dt, boss); break;
+      case 'corruptDragon': this._bossCorruptDragon(dt, boss); break;
+      case 'cloneVat': this._bossCloneVat(dt, boss); break;
+      case 'ghostKnight': this._bossGhostKnight(dt, boss); break;
+      case 'boxer': this._bossBoxer(dt, boss); break;
+      case 'lavaGuardian': this._bossLavaGuardian(dt, boss); break;
+      default: break;
+    }
+  }
+
+  /** 把 boss 传送到目标点附近的可用落点（用于瞬移类机制） */
+  _blinkBossTo(boss, tx, tz, opts) {
+    const o = opts || {};
+    const out = this._spawnScratch;
+    out[0] = tx; out[1] = boss.pos[1]; out[2] = tz;
+    // 找地面并把位置贴上去；找不到就退回原地
+    if (this.world.groundHeight) {
+      const gy = this.world.groundHeight(tx, tz);
+      if (!Number.isFinite(gy) || gy < -200) return false;
+      out[1] = gy + 0.2;
+    }
+    boss.pos[0] = out[0]; boss.pos[1] = out[1]; boss.pos[2] = out[2];
+    boss.vel[0] = 0; boss.vel[1] = 0; boss.vel[2] = 0;
+    if (o.facePlayer !== false) {
+      const p = this.player;
+      if (p) boss.yaw = Math.atan2(p.pos[0] - boss.pos[0], p.pos[2] - boss.pos[2]);
+    }
+    // 瞬移是玩家能看见的事件，给一次特效，避免"它怎么突然出现了"
+    if (this.enemies && typeof this.enemies.playSpecialFx === 'function') {
+      this.enemies.playSpecialFx(o.fx || 'boss-summon', [boss.pos[0], boss.pos[1] + boss.height * 0.5, boss.pos[2]]);
+    }
+    return true;
+  }
+
+  /** 第 4 关：重盾机甲 —— 转向慢、正面蓝色护盾、放爆炸蜘蛛、艺术激光炮 + 减速 */
+  _bossShieldMech(dt, boss) {
+    const p = this.player;
+    if (!p || !p.alive) return;
+    const t = boss.type;
+    // 转向慢：把朝向以受限角速度转向玩家（而不是瞬间对准）
+    const want = Math.atan2(p.pos[0] - boss.pos[0], p.pos[2] - boss.pos[2]);
+    let d = want - boss.yaw;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    const maxTurn = (t.turnRate || 1.1) * dt;
+    boss.yaw += Math.max(-maxTurn, Math.min(maxTurn, d));
+    boss.aimYaw = boss.yaw;                    // 炮口跟着机体转，形成"绕到侧面"的玩法
+
+    // 周期性释放 2~3 只爆炸蜘蛛
+    boss.summonT = (boss.summonT || 3) - dt;
+    if (boss.summonT <= 0) {
+      boss.summonT = 9;
+      const n = 2 + (this.rng() < 0.5 ? 0 : 1);      // 2 或 3
+      for (let i = 0; i < n; i++) {
+        const ang = this.rng() * Math.PI * 2;
+        const r = 3 + this.rng() * 3;
+        const sx = boss.pos[0] + Math.cos(ang) * r;
+        const sz = boss.pos[2] + Math.sin(ang) * r;
+        const gy = this.world.groundHeight ? this.world.groundHeight(sx, sz) : boss.pos[1];
+        if (!Number.isFinite(gy) || gy < -200) continue;
+        this.enemies.spawn('blastSpider', [sx, gy + 0.3, sz], {});
+      }
+      if (this.enemies.playSpecialFx) {
+        this.enemies.playSpecialFx('boss-summon', [boss.pos[0], boss.pos[1] + 1, boss.pos[2]]);
+      }
+    }
+  }
+
+  /** 第 5 关：神秘杀手 —— 每秒瞬移、贴身捶地击飞、随后远遁等待 */
+  _bossSlenderKiller(dt, boss) {
+    const p = this.player;
+    if (!p || !p.alive) return;
+    const t = boss.type;
+    boss.smashPhase = boss.smashPhase || 'hunt';
+    boss.smashT = boss.smashT || 0;
+    boss.blinkT = (boss.blinkT == null ? t.blinkInterval : boss.blinkT) - dt;
+
+    if (boss.smashPhase === 'wait') {
+      // 捶地后远遁：等待结束再回来
+      boss.waitT = (boss.waitT || 0) - dt;
+      if (boss.waitT <= 0) { boss.smashPhase = 'hunt'; boss.blinkT = 0; }
+      return;
+    }
+    if (boss.smashPhase === 'smash') {
+      boss.smashT -= dt;
+      boss.vel[0] = 0; boss.vel[2] = 0;                 // 捶地时不动
+      if (boss.smashT <= 0) {
+        // 结算范围伤害：玩家 100 点 + 击飞；其他怪物直接被秒杀
+        const R = t.smashRadius || 9;
+        const d = Math.hypot(p.pos[0] - boss.pos[0], p.pos[2] - boss.pos[2]);
+        if (d <= R) {
+          const dir = [p.pos[0] - boss.pos[0], 0.55, p.pos[2] - boss.pos[2]];
+          const L = Math.hypot(dir[0], dir[2]) || 1;
+          dir[0] /= L; dir[2] /= L;
+          p.applyDamage(t.weapon.damage || 100, dir, boss);
+          // 击飞初速度：按需求约能飞 30m
+          const kb = t.knockback || 30;
+          p.vel[0] += dir[0] * kb;
+          p.vel[1] += dir[1] * kb * 0.7;
+          p.vel[2] += dir[2] * kb;
+        }
+        // 秒杀范围内的其他怪物
+        if (t.killsMinions && this.enemies && this.enemies.all) {
+          for (const e of this.enemies.all) {
+            if (e === boss || !e.alive) continue;
+            if (e.type.tierBoss) continue;              // 不误伤其他 boss
+            const dd = Math.hypot(e.pos[0] - boss.pos[0], e.pos[2] - boss.pos[2]);
+            if (dd <= R) this.enemies.damage(e, 999999, false, e.pos, null, { source: 'boss-smash' });
+          }
+        }
+        if (this.enemies.playSpecialFx) {
+          this.enemies.playSpecialFx('explosion', [boss.pos[0], boss.pos[1] + 0.3, boss.pos[2]]);
+        }
+        Events.emit('audio:play', { name: 'explosion', pos: boss.pos, gain: 1 });
+        // 瞬移到 100m 之外等待
+        const ang = this.rng() * Math.PI * 2;
+        const far = t.postSmashBlink || 100;
+        this._blinkBossTo(boss, boss.pos[0] + Math.cos(ang) * far, boss.pos[2] + Math.sin(ang) * far);
+        boss.smashPhase = 'wait';
+        boss.waitT = t.postSmashWait || 3;
+      }
+      return;
+    }
+    // hunt：贴近到 10m 内就捶地；否则每秒瞬移一次拉近距离
+    const dist = Math.hypot(p.pos[0] - boss.pos[0], p.pos[2] - boss.pos[2]);
+    if (dist <= (t.smashRange || 10)) {
+      boss.smashPhase = 'smash';
+      boss.smashT = t.smashTime || 1.5;
+      if (this.enemies.playSpecialFx) {
+        this.enemies.playSpecialFx('spider-charge', [boss.pos[0], boss.pos[1] + 0.2, boss.pos[2]]);
+      }
+      return;
+    }
+    if (boss.blinkT <= 0) {
+      boss.blinkT = t.blinkInterval || 1.0;
+      // 在周边 blinkRange 内随机瞬移（偏向玩家，保证它能靠近）
+      const ang = this.rng() * Math.PI * 2;
+      const r = 6 + this.rng() * ((t.blinkRange || 50) * 0.5);
+      const tx = p.pos[0] + Math.cos(ang) * r;
+      const tz = p.pos[2] + Math.sin(ang) * r;
+      this._blinkBossTo(boss, tx, tz, { fx: 'boss-summon' });
+    }
+  }
+
+  /** 第 6 关：腐化龙 —— 空中盘旋，偶尔锁定正下方玩家并俯冲 */
+  _bossCorruptDragon(dt, boss) {
+    const p = this.player;
+    if (!p || !p.alive) return;
+    const t = boss.type;
+    boss.divePhase = boss.divePhase || 'circle';
+    if (boss.divePhase === 'circle') {
+      boss.diveT = (boss.diveT == null ? (t.diveCooldown || 7) : boss.diveT) - dt;
+      // 悬停在玩家上空 ~18m，绕着玩家慢慢转
+      const want = (t.hoverHeight || 18) + (this.world.groundHeight
+        ? this.world.groundHeight(boss.pos[0], boss.pos[2]) : 0);
+      boss.vel[1] = (want - boss.pos[1]) * 1.2;
+      if (boss.diveT <= 0 && Math.hypot(p.pos[0] - boss.pos[0], p.pos[2] - boss.pos[2]) <= (t.diveRange || 100)) {
+        boss.divePhase = 'dive';
+        boss.diveTarget = [p.pos[0], p.pos[1], p.pos[2]];
+        if (this.enemies.playSpecialFx) {
+          this.enemies.playSpecialFx('spider-charge', [boss.pos[0], boss.pos[1], boss.pos[2]]);
+        }
+      }
+      return;
+    }
+    if (boss.divePhase === 'dive') {
+      // 朝锁定位置俯冲（锁定的是俯冲开始那一刻的位置，玩家可以走开）
+      const tg = boss.diveTarget || [p.pos[0], p.pos[1], p.pos[2]];
+      const dx = tg[0] - boss.pos[0], dy = tg[1] - boss.pos[1], dz = tg[2] - boss.pos[2];
+      const L = Math.hypot(dx, dy, dz) || 1;
+      const sp = t.diveSpeed || 34;
+      boss.vel[0] = dx / L * sp;
+      boss.vel[1] = dy / L * sp;
+      boss.vel[2] = dz / L * sp;
+      // 冲到目标附近就命中判定并拉起
+      if (L < 3.5) {
+        const pd = Math.hypot(p.pos[0] - boss.pos[0], p.pos[2] - boss.pos[2]);
+        if (pd < 4.5) {
+          const dir = [0, -0.4, 0];
+          p.applyDamage(t.weapon.damage || 100, dir, boss);
+        }
+        if (this.enemies.playSpecialFx) {
+          this.enemies.playSpecialFx('explosion', [boss.pos[0], boss.pos[1], boss.pos[2]]);
+        }
+        boss.divePhase = 'climb';
+      }
+      return;
+    }
+    // climb：拉回空中再重新盘旋
+    boss.vel[1] = t.climbSpeed || 18;
+    const want = (t.hoverHeight || 18) + (this.world.groundHeight
+      ? this.world.groundHeight(boss.pos[0], boss.pos[2]) : 0);
+    if (boss.pos[1] >= want - 1) {
+      boss.divePhase = 'circle';
+      boss.diveT = t.diveCooldown || 7;
+    }
+  }
+
+  /** 第 7 关：克隆罐 —— 维持 50 只哥布林，累计死亡 100 只后爆炸 */
+  _bossCloneVat(dt, boss) {
+    const t = boss.type;
+    boss.vatKills = boss.vatKills || 0;
+    // 统计当前存活的哥布林
+    let alive = 0;
+    if (this.enemies && this.enemies.all) {
+      for (const e of this.enemies.all) {
+        if (e.alive && e.typeId === 'tier7CloneGoblin') alive++;
+      }
+    }
+    // 不足就立刻补（需求："每死亡一只哥布林由克隆罐即刻在罐子旁生成一只新的"）
+    boss.vatSpawnCd = (boss.vatSpawnCd || 0) - dt;
+    const want = t.concurrent || 50;
+    if (alive < want && boss.vatSpawnCd <= 0) {
+      // 一次补 1 只，但用很小的间隔避免开局一帧涌出 50 只
+      boss.vatSpawnCd = t.spawnInterval || 0.16;
+      const ang = this.rng() * Math.PI * 2;
+      const r = 2.5 + this.rng() * 4;
+      const sx = boss.pos[0] + Math.cos(ang) * r;
+      const sz = boss.pos[2] + Math.sin(ang) * r;
+      const gy = this.world.groundHeight ? this.world.groundHeight(sx, sz) : boss.pos[1];
+      if (Number.isFinite(gy) && gy > -200) {
+        this.enemies.spawn('tier7CloneGoblin', [sx, gy + 0.3, sz], {});
+      }
+    }
+    // 累计死亡数：由 EnemySystem 的击杀事件累加（见 enemies.js 对 cloneVat 的处理）
+    if (boss.vatKills >= (t.killGoal || 100)) {
+      // 罐子自动爆炸：很大一声炸弹声、全图可听
+      Events.emit('audio:play', { name: 'explosion', pos: boss.pos, gain: 2.0 });
+      Events.emit('ui:message', { title: '克隆罐已过载', sub: '克隆体被清空', kind: 'good' });
+      if (this.enemies.playSpecialFx) {
+        this.enemies.playSpecialFx('explosion', [boss.pos[0], boss.pos[1] + 1, boss.pos[2]]);
+      }
+      this.enemies.damage(boss, 99999999, false, boss.pos, null, { source: 'vat-overload' });
+    }
+  }
+
+  /** 第 8 关：鬼火骑士 —— 来回冲刺，击中后仍要冲满 40m */
+  _bossGhostKnight(dt, boss) {
+    const p = this.player;
+    if (!p || !p.alive) return;
+    const t = boss.type;
+    boss.chargePhase = boss.chargePhase || 'aim';
+    boss.chargeDist = boss.chargeDist || 0;
+    if (boss.chargePhase === 'aim') {
+      boss.chargeT = (boss.chargeT || t.chargeWindup || 0.45) - dt;
+      boss.vel[0] = 0; boss.vel[2] = 0;
+      if (boss.chargeT <= 0) {
+        // 锁定方向后开始冲刺
+        const dx = p.pos[0] - boss.pos[0], dz = p.pos[2] - boss.pos[2];
+        const L = Math.hypot(dx, dz) || 1;
+        boss.chargeDir = [dx / L, dz / L];
+        boss.chargePhase = 'charge';
+        boss.chargeDist = 0;
+      }
+      return;
+    }
+    // 冲刺中：沿锁定方向全速推进，**即使命中玩家也不停**（需求：至少 40m）
+    const sp = t.chargeSpeed || 26;
+    const before = [boss.pos[0], boss.pos[2]];
+    boss.vel[0] = boss.chargeDir[0] * sp;
+    boss.vel[2] = boss.chargeDir[1] * sp;
+    boss.chargeDist += Math.hypot(boss.pos[0] - before[0], boss.pos[2] - before[1]);
+    if (boss.chargeDist >= (t.chargeMinDistance || 40)) {
+      boss.chargePhase = 'aim';
+      boss.chargeT = t.chargeWindup || 0.45;
+    }
+  }
+
+  /** 第 9 关：拳皇 —— 只会跳着走；远程攻击无效 */
+  _bossBoxer(dt, boss) {
+    // 跳跃由 EnemySystem 的通用 hop 机制驱动（见 _spiderQueenHop 对 hopOnly 的复用），
+    // 这里只维持"远程免疫"的标记与落地节流。
+    boss.rangedImmune = true;
+  }
+
+  /** 第 10 关：熔岩守卫者 —— 大跳保持距离、放不动的爆炸蜘蛛、追踪弹幕 */
+  _bossLavaGuardian(dt, boss) {
+    const p = this.player;
+    if (!p || !p.alive) return;
+    const t = boss.type;
+    const dist = Math.hypot(p.pos[0] - boss.pos[0], p.pos[2] - boss.pos[2]);
+
+    // 刻意保持 50~150m：太近就跳开，太远就跳近
+    boss.leapT = (boss.leapT || 0) - dt;
+    if (boss.leapT <= 0 && boss.grounded) {
+      const tooNear = dist < (t.keepMin || 50);
+      const tooFar = dist > (t.keepMax || 150);
+      if (tooNear || tooFar) {
+        boss.leapT = t.leapCooldown || 4.5;
+        const ang = this.rng() * Math.PI * 2;
+        const r = tooNear ? 60 + this.rng() * 40 : 40 + this.rng() * 40;
+        const tx = p.pos[0] + Math.cos(ang) * r;
+        const tz = p.pos[2] + Math.sin(ang) * r;
+        // 横跨 100m 以内任意跳跃：直接落点传送 + 一段上抛动画由物理接管
+        this._blinkBossTo(boss, tx, tz, { fx: 'boss-summon' });
+        boss.vel[1] = 12;
+      }
+    }
+
+    // 扔出不会动的爆炸蜘蛛（玩家靠近才蓄力爆炸）
+    boss.seedT = (boss.seedT || t.seedSpiderCooldown || 5) - dt;
+    if (boss.seedT <= 0) {
+      boss.seedT = t.seedSpiderCooldown || 5;
+      const n = t.seedSpiderCount || 3;
+      for (let i = 0; i < n; i++) {
+        const ang = this.rng() * Math.PI * 2;
+        const r = 4 + this.rng() * 8;
+        const sx = boss.pos[0] + Math.cos(ang) * r;
+        const sz = boss.pos[2] + Math.sin(ang) * r;
+        const gy = this.world.groundHeight ? this.world.groundHeight(sx, sz) : boss.pos[1];
+        if (!Number.isFinite(gy) || gy < -200) continue;
+        const sp = this.enemies.spawn('blastSpider', [sx, gy + 0.3, sz], {});
+        // "不会动"：标记为静止，由 AI 检查
+        sp.stationarySeed = true;
+      }
+    }
+
+    // 间歇性红色大型子弹：慢、多（每秒约 5 个）、追踪玩家、可被击破
+    boss.bulletT = (boss.bulletT || 0) - dt;
+    if (boss.bulletT <= 0 && dist < (t.attackRange || 200)) {
+      // 一次射出一个"波次"，持续约 1 秒、每秒 5 发
+      const perSec = t.bulletPerSecond || 5;
+      const shots = Math.max(1, Math.round(perSec * (t.bulletBurstInterval > 1 ? 1 : 1)));
+      for (let i = 0; i < shots; i++) {
+        this._spawnHomingBullet(boss, t, i * (1 / perSec));
+      }
+      boss.bulletT = (t.bulletBurstInterval || 4.0);
+      Events.emit('audio:play', { name: 'sniper_fire', pos: boss.pos, gain: 0.7 });
+    }
+  }
+
+  /**
+   * 熔岩守卫者的追踪弹。
+   * 需求：速度慢、数量多、追踪玩家、玩家射击可击破（血量 1）、命中伤害 40。
+   * 用投射物系统实现，这样它能被玩家的子弹命中（bloodHp=1）。
+   */
+  _spawnHomingBullet(boss, t, delay) {
+    const proj = this.enemies && this.enemies.projectiles;
+    if (!proj || typeof proj.spawn !== 'function') return;
+    const ang = Math.atan2(this.player.pos[0] - boss.pos[0], this.player.pos[2] - boss.pos[2]) + (this.rng() - 0.5) * 0.5;
+    const muzzle = [boss.pos[0], boss.pos[1] + boss.height * 0.7, boss.pos[2]];
+    const dir = [Math.sin(ang), 0.06, Math.cos(ang)];
+    proj.spawn(muzzle, dir, t.bulletSpeed || 11, {
+      color: [1.0, 0.22, 0.12], width: 0.42, life: 9.0,
+      damage: t.bulletDamage || 40, ownerId: -1, gravity: 0,
+      // 血量 1 → 被任意子弹命中即消失
+      hp: t.bulletHp || 1, homing: !!t.bulletHoming, homingTarget: 'player',
+      delayed: delay || 0,
+    });
   }
 
   _updateBossSummons(dt) {
@@ -187,15 +569,32 @@ export class Director {
     this.phaseTime += dt;
     if (this.run.bossPending) {
       if (!this._boss) {
-        const pos = this._findSpawnPoint('broodStalker', true);
+        const spec = TIER_BOSS[this.tier] || TIER_BOSS[3];
+        const pos = this._findSpawnPoint(spec.typeId, true);
         if (pos) {
-          this._boss = this.enemies.spawn('broodStalker', pos, { elite: true, scale: 1.6 });
-          this._bossId = this._boss.id;
-          this._boss.maxHp = Math.round(this._boss.maxHp * (5 + this.tier) * (1 + Math.max(0, this.tier - 3) * 0.15));
-          this._boss.hp = this._boss.maxHp;
-          this._boss.shield = this._boss.maxShield *= 3;
+          const boss = this.enemies.spawn(spec.typeId, pos, { elite: true, scale: spec.scale });
+          this._boss = boss;
+          this._bossId = boss.id;
+          // 血量缩放（需求："除了拳皇外，boss 血量按目前样本大致线性增长"）。
+          // 拳皇的血量在需求里写死 500，所以跳过缩放。
+          if (!boss.type.flatHp) {
+            boss.maxHp = Math.round(boss.maxHp * (5 + this.tier) * (1 + Math.max(0, this.tier - 3) * 0.15));
+          }
+          boss.hp = boss.maxHp;
+          // 盾牌类 boss（重盾机甲）的血量靠正面护盾承伤，不再额外乘护盾
+          boss.maxShield = Math.round(boss.maxShield * (boss.type.frontShield ? 1 : 3));
+          boss.shield = boss.maxShield;
+          // 克隆罐：把自己登记成 run 的 boss 目标，并在罐子旁持续生成哥布林
+          if (boss.type.bossKind === 'cloneVat') {
+            boss.vatSpawned = 0;
+            boss.vatKills = 0;
+          }
           Events.emit('audio:play', { name: 'boss_arrive' });
-          Events.emit('ui:message', { title: '守关首领：绿影蛛皇', sub: '击败首领才能完成本层目标', kind: 'warn' });
+          Events.emit('ui:message', {
+            title: `守关首领：${boss.type.name}`,
+            sub: spec.hint || '击败首领才能完成本层目标',
+            kind: 'warn',
+          });
         }
       } else if (!this._boss.alive || this._boss.id !== this._bossId) {
         this.run.bossPending = false;
@@ -203,6 +602,8 @@ export class Director {
         Events.emit('ui:message', { title: '首领已击败', sub: '完成剩余目标，结束本层远征', kind: 'good' });
       } else {
         this._updateBossSummons(dt);
+        // 需求 8：各 boss 的专属行为
+        this._updateTierBoss(dt, this._boss);
         this._bossPulse -= dt;
         if (this._bossPulse <= 0) {
           this._bossPulse = 8;

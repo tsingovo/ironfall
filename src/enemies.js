@@ -194,6 +194,153 @@ export const ENEMY_TYPES = {
     weapon:{damage:50,melee:true}, behavior:'hitrun', meshKind:'hybrid',
     attackRange:3.5, preferredRange:2, retreatDistance:60, windup:0.22,
   },
+  // ================================================================
+  // 需求 8：第三关开始每关都有 boss（共 7 个）
+  //
+  // 数据驱动：每个 boss 用与普通兵种相同的字段描述，专属行为在
+  // enemies.js 的 _updateTierBoss 里按 bossKind 分发。
+  // **血量按"目前样本大致线性增长"**（需求明确要求）：
+  // 以第 3 关蛛皇的基准血量为起点，每层按固定斜率递增。
+  // ================================================================
+  tier4ShieldMech: {
+    id: 'tier4ShieldMech', name: '重盾机甲', nameCN: '重盾机甲',
+    hp: 150, shield: 150, speed: 3.2, accel: 10,
+    radius: 1.5, height: 3.0,
+    color: [0.28, 0.30, 0.34], accentColor: [0.25, 0.62, 1.0],
+    score: 2600, alloy: 60, xp: 20, threat: 8, elite: true, tierBoss: true,
+    bossKind: 'shieldMech',
+    weapon: { damage: 200, rpm: 18, range: 90, accuracy: 0.9, burst: 1, burstPause: 3.0,
+      projectileSpeed: 0, spreadDeg: 1.2, telegraph: 1.1, laser: true },
+    behavior: 'infantry', meshKind: 'heavy',
+    attackRange: 85, preferredRange: 30, strafe: false,
+    // 需求：转向慢；前面板有蓝色透明护盾；击中护盾不算击中 boss
+    turnRate: 1.1,                       // 弧度/秒，明显慢于玩家的转身
+    frontShield: true,                   // 仅正面挡伤（复用 shieldFront 的判定思路）
+    shieldArc: 0.42, shieldDamageMul: 0.0,
+    summonSpiderCount: 2.5,              // 一次放 2~3 只爆炸蜘蛛
+    slowOnHit: { factor: 0.4, time: 3 },  // 命中后减速 60% 持续 3 秒（不影响钩锁）
+  },
+  tier5Stalker: {
+    id: 'tier5Stalker', name: '神秘杀手', nameCN: '神秘杀手',
+    hp: 150, shield: 150, speed: 6.0, accel: 30,
+    radius: 1.1, height: 10.8,           // 身高是玩家的 6 倍（1.8 * 6）
+    color: [0.04, 0.04, 0.05], accentColor: [0.85, 0.85, 0.95],
+    score: 3000, alloy: 70, xp: 22, threat: 9, elite: true, tierBoss: true,
+    bossKind: 'slenderKiller',
+    weapon: { damage: 100, rpm: 20, range: 12, accuracy: 1.0, burst: 1, burstPause: 2.0,
+      projectileSpeed: 0, spreadDeg: 0, telegraph: 1.5, melee: true },
+    behavior: 'sniper', meshKind: 'slender',
+    attackRange: 10, preferredRange: 8, strafe: false,
+    // 需求：每 1 秒瞬移一次、范围周边 50m；接近玩家 10m 内时做 1.5s 捶地；
+    //       捶地后瞬移到 100m 外等待 3 秒再来
+    blinkInterval: 1.0, blinkRange: 50,
+    smashRange: 10, smashTime: 1.5, smashRadius: 9,
+    knockback: 30,                        // 击飞初速度，约能飞 30m
+    postSmashBlink: 100, postSmashWait: 3,
+    killsMinions: true,                   // 捶地秒杀其他怪物
+  },
+  tier6Dragon: {
+    id: 'tier6Dragon', name: '腐化龙', nameCN: '腐化龙',
+    hp: 150, shield: 150, speed: 11.0, accel: 26,
+    radius: 2.0, height: 4.2,
+    color: [0.10, 0.20, 0.10], accentColor: [0.45, 1.0, 0.35],
+    score: 3200, alloy: 75, xp: 24, threat: 9, elite: true, tierBoss: true,
+    bossKind: 'corruptDragon',
+    weapon: { damage: 100, rpm: 24, range: 40, accuracy: 0.95, burst: 1, burstPause: 2.6,
+      projectileSpeed: 0, spreadDeg: 2.0, telegraph: 0.9 },
+    behavior: 'flyer', flying: true, hoverHeight: 18, bobAmp: 1.2, bobFreq: 0.8,
+    meshKind: 'dragon',
+    attackRange: 36, preferredRange: 22, strafe: true,
+    // 需求：空中随机盘旋，偶尔锁定正下方 100m 范围内的玩家并俯冲攻击再回到空中
+    diveRange: 100, diveCooldown: 7, diveSpeed: 34, climbSpeed: 18,
+  },
+  tier7CloneGoblin: {
+    id: 'tier7CloneGoblin', name: '克隆哥布林', nameCN: '克隆哥布林',
+    // 需求：每只 1 滴血、伤害 1、攻击频率每秒一次
+    hp: 1, shield: 0, speed: 6.5, accel: 40,
+    radius: 0.32, height: 1.1,
+    color: [0.22, 0.55, 0.16], accentColor: [0.6, 1.0, 0.35],
+    score: 30, alloy: 1, xp: 1, threat: 0.4,
+    weapon: { damage: 1, rpm: 60, range: 2.4, accuracy: 1.0, burst: 1, burstPause: 1.0,
+      projectileSpeed: 0, spreadDeg: 0, telegraph: 0.12, melee: true },
+    behavior: 'melee', meshKind: 'humanoid',
+    attackRange: 2.6, preferredRange: 1.8, strafe: false,
+    cloneOf: 'tier7Vat',                 // 由克隆罐持续生成
+  },
+  tier7Vat: {
+    id: 'tier7Vat', name: '克隆罐', nameCN: '克隆罐',
+    // 罐子本体不可被攻击打死（死亡条件是按击杀数），给极高的血避免误杀
+    hp: 1000000, shield: 0, speed: 0, accel: 0,
+    radius: 1.6, height: 2.6,
+    color: [0.12, 0.42, 0.18], accentColor: [0.35, 1.0, 0.5],
+    score: 0, alloy: 0, xp: 0, threat: 0,
+    weapon: { damage: 0, melee: true },
+    behavior: 'melee', meshKind: 'vat', invulnerable: true,
+    attackRange: 0, preferredRange: 0, strafe: false,
+    // 需求：同时存在 50 只；每死一只立刻补一只；累计死亡 100 只后罐子爆炸
+    // （很大一声炸弹声、全图可听）并判定 boss 死亡
+    concurrent: 50, killGoal: 100, spawnInterval: 0.16,
+    flatHp: true,          // 不参与 boss 血量线性缩放（它靠清怪数结算，不靠打）
+    unkillable: true,      // 直接伤害无效；只有累计击杀达标才会自爆
+  },
+  tier8GhostKnight: {
+    id: 'tier8GhostKnight', name: '鬼火骑士', nameCN: '鬼火骑士',
+    hp: 150, shield: 150, speed: 20.0, accel: 60,
+    radius: 1.2, height: 2.9,
+    color: [0.16, 0.20, 0.30], accentColor: [0.4, 0.85, 1.0],
+    score: 3400, alloy: 80, xp: 26, threat: 9, elite: true, tierBoss: true,
+    bossKind: 'ghostKnight',
+    weapon: { damage: 50, rpm: 90, range: 4.5, accuracy: 1.0, burst: 1, burstPause: 0.9,
+      projectileSpeed: 0, spreadDeg: 0, telegraph: 0.2, melee: true },
+    behavior: 'charger', meshKind: 'centaur',
+    attackRange: 4.2, preferredRange: 2.0, strafe: false,
+    // 需求：不断快速来回冲刺（击中玩家后也要冲刺至少 40m）
+    chargeMinDistance: 40, chargeSpeed: 26, chargeWindup: 0.45,
+  },
+  tier9Boxer: {
+    id: 'tier9Boxer', name: '拳皇', nameCN: '拳皇',
+    // 需求：血量 500（不按线性增长 —— 需求明确"除了拳皇外"）
+    hp: 500, shield: 0, speed: 7.0, accel: 45,
+    radius: 0.95, height: 2.4,
+    color: [0.62, 0.42, 0.20], accentColor: [1.0, 0.78, 0.35],
+    score: 3400, alloy: 80, xp: 26, threat: 8, elite: true, tierBoss: true,
+    bossKind: 'boxer',
+    weapon: { damage: 10, rpm: 60, range: 3.2, accuracy: 1.0, burst: 1, burstPause: 1.0,
+      projectileSpeed: 0, spreadDeg: 0, telegraph: 0.16, melee: true },
+    behavior: 'melee', meshKind: 'kangaroo',
+    attackRange: 3.4, preferredRange: 2.2, strafe: false,
+    // 需求：只会跳着走、双头袋鼠戴拳套、伤害 10、攻击频率 1 次/秒、
+    //       **远程攻击对他无效**
+    hopOnly: true, hopInterval: 0.7, hopSpeed: 7.0, hopForward: 8,
+    rangedImmune: true,
+    flatHp: true,                        // 血量固定 500，不参与线性增长
+  },
+  tier10LavaGuardian: {
+    id: 'tier10LavaGuardian', name: '熔岩守卫者', nameCN: '熔岩守卫者',
+    hp: 150, shield: 150, speed: 9.0, accel: 40,
+    radius: 1.7, height: 4.0,
+    color: [0.30, 0.10, 0.05], accentColor: [1.0, 0.42, 0.08],
+    score: 4000, alloy: 100, xp: 30, threat: 10, elite: true, tierBoss: true,
+    bossKind: 'lavaGuardian',
+    weapon: { damage: 40, rpm: 60, range: 200, accuracy: 0.9, burst: 1, burstPause: 1.0,
+      projectileSpeed: 0, spreadDeg: 3.0, telegraph: 0.3 },
+    behavior: 'sniper', meshKind: 'heavy',
+    // ⚠ 射程必须落在**地图尺度**内：内置地图 size=200（半宽 100），而导演的刷怪环
+    // 约为 ttackRange+12 起 —— 初版写 190/120 时环被推到 132~170m，
+    // 地图上根本没有那么远的可站点，表现为「第 10 关 boss 永远刷不出来」。
+    // 现在压到 62/40，环落在 74~112m，与「保持 50-150m」的设计意图也一致。
+    attackRange: 62, preferredRange: 40, strafe: false,
+    // 需求：可横跨 100m 内任意跳跃；刻意与玩家保持 50-150m；
+    //       扔出不会动的爆炸蜘蛛（玩家靠近才蓄力爆炸）；
+    //       间歇发出红色大型子弹，慢但多（每秒约 5 个）、追踪玩家、
+    //       玩家射击可击破（子弹血量 1）、被命中伤害 40
+    leapRange: 100, leapCooldown: 4.5,
+    keepMin: 45, keepMax: 90,
+    seedSpiderCooldown: 5, seedSpiderCount: 3,
+    bulletBurstInterval: 4.0, bulletPerSecond: 5, bulletDamage: 40,
+    bulletHp: 1, bulletSpeed: 11, bulletHoming: true,
+    noObjectives: true, noMinions: true,   // 需求：地图内没有任务、没有小怪
+  },
 };
 
 export const ENEMY_IDS = Object.keys(ENEMY_TYPES);
@@ -1995,6 +2142,13 @@ export class EnemySystem {
       shieldBreak: false,
     };
     if (!e || !e.alive || amount <= 0) return res;
+      // 需求 8 第 7 关：克隆罐不可被直接击杀 —— 它的结算方式是「累计 100 只
+      // 哥布林死亡」，而不是挨够伤害。豁免放在最前，避免玩家把罐子当血包打，
+      // 也避免它被溅射/自爆误伤而提前结束本层（vat-overload 是它自己的结算）。
+      if (e.type && e.type.unkillable && !(opts && opts.source === 'vat-overload')) {
+        res.blocked = true;
+        return res;
+      }
     const o = opts || {};
     let dmg = amount;
 

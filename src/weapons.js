@@ -1262,7 +1262,10 @@ export class WeaponSystem {
 
     // 视图模型动画
     this._updateViewmodel(dt, st, def, input);
-    this.projectiles.update(dt, this.world, this.enemies);
+    // 需求 8：把本帧玩家的射击射线交给投射物系统，用于判定"击破敌方子弹"。
+    // 传完就清空，保证每帧的拦截只反映这一帧真正打出的子弹。
+    this.projectiles.update(dt, this.world, this.enemies, this._shotRays);
+    if (this._shotRays) this._shotRays.length = 0;
   }
 
   _startReload(st, def, opts = {}) {
@@ -1505,6 +1508,16 @@ export class WeaponSystem {
       hit: false, enemy: null, point: null, endPoint: null,
       damage: 0, headshot: false, legshot: false, killed: false, dist: maxDist,
     };
+
+    // 需求 8：记录本帧玩家的射击射线，供 projectiles 判定"击破敌方子弹"。
+    // 放在最前面，这样即使这一枪没打中任何东西，它仍然能拦截路径上的敌弹。
+    if (!this._shotRays) this._shotRays = [];
+    // 每帧清一次（由 update 在帧首调用 _clearShotRays）
+    this._shotRays.push({
+      ox: origin[0], oy: origin[1], oz: origin[2],
+      dx: dir[0], dy: dir[1], dz: dir[2], len: maxDist,
+    });
+    if (this._shotRays.length > 64) this._shotRays.shift();
 
     // 敌人
     let enemyHit = null;
