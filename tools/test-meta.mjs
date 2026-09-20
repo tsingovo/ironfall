@@ -98,13 +98,21 @@ test('关卡无条件开放：新存档也能直接选任意一层', () => {
   assert.equal(m.currentTier(), CAMPAIGN_TIER_COUNT, '被拒后当前层不变');
 });
 
-test('战役推进在第一关解锁第二关，在第十关封顶', () => {
+test('战役推进：逐关解锁到第 10 关，之后循环回第 1 关', () => {
   const m = new MetaProgress({});
   assert.equal(m.advanceCampaign(1), 2);
   assert.equal(m.maxUnlockedTier(), 2);
-  assert.equal(m.advanceCampaign(10), 10);
-  assert.equal(m.maxUnlockedTier(), 10);
-  assert.equal(m.currentTier(), 10);
+  // 一关一关推：第 N 关通关 → 解锁并进入第 N+1 关
+  for (let tier = 2; tier < CAMPAIGN_TIER_COUNT; tier++) {
+    assert.equal(m.advanceCampaign(tier), tier + 1, `第 ${tier} 关之后应进入第 ${tier + 1} 关`);
+  }
+  assert.equal(m.maxUnlockedTier(), CAMPAIGN_TIER_COUNT, '推进到第 10 关后解锁上限封顶');
+  assert.equal(m.currentTier(), CAMPAIGN_TIER_COUNT);
+  // 十层远征是闭环：第 10 关通关后回到第 1 关重新开始，
+  // 但已解锁层数（元进度）全部保留 —— 见 save.js advanceCampaign 的注释。
+  assert.equal(m.advanceCampaign(CAMPAIGN_TIER_COUNT), 1, '第 10 关之后循环回第 1 关');
+  assert.equal(m.maxUnlockedTier(), CAMPAIGN_TIER_COUNT, '循环回第 1 关不会丢失解锁上限');
+  assert.equal(m.currentTier(), 1);
 });
 
 test('持久化往返保留仓库与当前关卡', () => {

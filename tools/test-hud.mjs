@@ -515,8 +515,40 @@ const root = makeRoot(doc);
 const ctx = makeCtx();
 const hud = new HUD(root, ctx);
 
+/**
+ * 菜单种类清单：直接从 hud.js 源码里解析 MENU_SPEC 的顶层键。
+ * 不写死一份副本 —— 那样加菜单时测试会悄悄漏掉新面板。
+ */
+function hudMenuKinds() {
+  const src = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../src/ui/hud.js'), 'utf8');
+  const start = src.indexOf('const MENU_SPEC = {');
+  if (start < 0) return [];
+  // 逐字符找 MENU_SPEC 对象的结束位置，再取顶层键
+  let i = src.indexOf('{', start);
+  let depth = 0;
+  let end = i;
+  for (; i < src.length; i++) {
+    const ch = src[i];
+    if (ch === '{') depth++;
+    else if (ch === '}') { depth--; if (depth === 0) { end = i; break; } }
+  }
+  const body = src.slice(start, end);
+  const kinds = [];
+  const re = /^  ([a-z_][a-z0-9_]*):\s*\{/gm;
+  let m;
+  while ((m = re.exec(body)) !== null) kinds.push(m[1]);
+  return kinds;
+}
+
 group('G1 构造与稳定元素 id');
 {
+  // 菜单面板改为**按需构建**（showMenu 第一次打开时才建），
+  // 所以这里先逐个打开一遍菜单，再断言稳定 id 齐全。
+  // 顺带验证"惰性构建确实生效"：构造后菜单层不应存在，打开后才有。
+  const lazyBefore = !root.querySelector('#menu-overlay');
+  check('构造时未提前创建菜单层（按需构建生效）', lazyBefore,
+    lazyBefore ? 'ok' : '构造后 menu-overlay 已存在，惰性构建失效');
+  for (const k of hudMenuKinds(hud)) hud.showMenu(k);
   const missing = REQUIRED_IDS.filter((id) => !root.querySelector('#' + id));
   check('HUD 构造成功，全部 ' + REQUIRED_IDS.length + ' 个稳定 id 均存在', missing.length === 0,
     missing.length ? 'missing: ' + missing.slice(0, 8).join(', ') : 'ok');
@@ -1097,8 +1129,17 @@ group('G7 DOM 节点预算');
   const created = mockStats.created - createdBeforeStress;
   eq('压力测试后节点总数 == 构造基线', now, baselineNodes);
   eq('压力测试后累计创建节点数 == 压力前快照', created, 0);
-  // In-game invitation form adds a fixed set of labelled controls; growth checks above remain unchanged.
-  check('节点总数处于合理预算内 (<930)', now < 930, '节点数 = ' + now);
+  // 节点预算是**有约束力的护栏**，不是精确目标 —— 上调必须有理由。
+  //
+  // 历史：930 是按"10 个菜单面板"标定的。之后新增了 switch_tier 面板
+  // （ESC 菜单里切关卡，与 campaign 同构、各 10 个条目），全部面板建出后到 936。
+  // 同时把菜单面板改成**按需构建**（showMenu 第一次打开才建，见 _buildMenuPanel），
+  // 回收了 26 个节点 —— 否则会是 962。于是上调到 960：
+  //   · 936 对游戏 HUD 完全在合理区间，无性能影响
+  //   · 面板按需构建后，实际开局只会建出用到的那一两个
+  //   · 留 24 个节点余量给下一次小改动；再多就必须先想清楚
+  //     "是不是该合并或懒建面板"，而不是顺手改这个数字
+  check('节点总数处于合理预算内 (<960)', now < 960, '节点数 = ' + now);
   section('构造基线节点数 = ' + baselineNodes + '；压力后 = ' + now + '；新增 = ' + created);
   section('其中：toast 8 / 击杀播报 6 / 伤害数字 32 为固定池节点');
 }

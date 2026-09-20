@@ -875,13 +875,38 @@ export class HUD {
 
   _buildMenus(mk) {
     const el = this.el;
-    el.menuOverlay = mk('div', 'menu-overlay', 'menu-overlay');
-    this._append(el.menuOverlay, mk('div', 'menu-backdrop', 'menu-backdrop'));
-    this._append(el.menuOverlay, mk('div', 'menu-scan', 'menu-scan'));
+    // 菜单面板改为**按需构建**（见 _buildMenuPanel / _ensureMenuLayer）。
+    // 早先所有面板在构造时一次性全建出来（10 个面板 × 十几个条目），
+    // 每加一个菜单面板就把 DOM 节点数推高一截（节点预算自测盯着），
+    // 而整局里通常只会打开其中一两个。
+    // 注意：不要存成 this._mk —— 那是既有的 DOM 创建方法，覆盖它会无限递归。
+    this._menuMk = mk;
     this._menuPanels = Object.create(null);
+    this._menuLayerBuilt = false;
+  }
 
-    for (const kind of Object.keys(MENU_SPEC)) {
-      const spec = MENU_SPEC[kind];
+  /** 首次真正要打开菜单时，才创建 overlay 与其中的面板 */
+  _ensureMenuLayer(kind) {
+    const mk = this._menuMk;
+    const el = this.el;
+    if (!mk) return null;
+    if (!this._menuLayerBuilt) {
+      this._menuLayerBuilt = true;
+      el.menuOverlay = mk('div', 'menu-overlay', 'menu-overlay');
+      this._append(el.menuOverlay, mk('div', 'menu-backdrop', 'menu-backdrop'));
+      this._append(el.menuOverlay, mk('div', 'menu-scan', 'menu-scan'));
+    }
+    if (kind && !this._menuPanels[kind]) this._buildMenuPanel(kind);
+    return el.menuOverlay;
+  }
+
+  /** 构建单个菜单面板；由 _ensureMenuLayer 在第一次打开该菜单时调用 */
+  _buildMenuPanel(kind) {
+    const mk = this._menuMk;
+    const el = this.el;
+    const spec = MENU_SPEC[kind];
+    if (!mk || !el.menuOverlay || !spec) return null;
+    {
       const panel = mk('section', 'menu-' + kind, 'menu-panel menu-panel--' + kind);
       if (panel && panel.setAttribute) panel.setAttribute('data-menu', kind);
       const inner = mk('div', 'menu-' + kind + '-inner', 'menu-panel-inner');
@@ -1174,9 +1199,14 @@ export class HUD {
       this._append(el.menuOverlay, panel);
       this._menuPanels[kind] = panel;
     }
-
-    this._append(el.root, el.menuOverlay);
-    this._bind(this.doc, 'keydown', (e) => this._onKeyDown(e));
+    // overlay 挂到 root 的动作放在这里：_ensureMenuLayer 首次建层时会调用本方法，
+    // 此时 overlay 还不属于文档树，挂一次即可（重复调用是幂等的）。
+    if (!this._menuLayerAttached) {
+      this._menuLayerAttached = true;
+      this._append(el.root, el.menuOverlay);
+      this._bind(this.doc, 'keydown', (e) => this._onKeyDown(e));
+    }
+    return this._menuPanels[kind];
   }
 
   _buildSettingControl(mk, spec) {
@@ -2471,6 +2501,9 @@ export class HUD {
     try {
       if (kind === 'upgrade') { this.showUpgradePanel(null, undefined); return; }
       if (!MENU_SPEC[kind]) return;
+      // 按需建层与面板：构造时不再一次性把 10 个面板全建出来（节点预算自测盯着）。
+      this._ensureMenuLayer(kind);
+      if (!this._menuPanels[kind]) return;
       if (payload && typeof payload === 'object') this._statOverride = payload;
       this._menu = kind;
       this._upgradeOpen = false;
