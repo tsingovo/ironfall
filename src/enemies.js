@@ -276,6 +276,9 @@ export const ENEMY_TYPES = {
     score: 0, alloy: 0, xp: 0, threat: 0,
     weapon: { damage: 0, melee: true },
     behavior: 'melee', meshKind: 'vat', invulnerable: true,
+    // 关键：必须声明 bossKind，否则 director._updateTierBoss 会走进 default 分支，
+    // 克隆罐的生成/结算逻辑永远不会被调用（实测踩过：一个哥布林都不生成）。
+    tierBoss: true, bossKind: 'cloneVat',
     attackRange: 0, preferredRange: 0, strafe: false,
     // 需求：同时存在 50 只；每死一只立刻补一只；累计死亡 100 只后罐子爆炸
     // （很大一声炸弹声、全图可听）并判定 boss 死亡

@@ -18,7 +18,10 @@ function setup(tier=3) {
   return {world,p,enemies,director};
 }
 const health=[];
-for(const tier of [3,6,10]) {
+// 需求 8 之后，蛛皇（hybridBoss）**只出现在第 3 关** —— 第 4 关起每层换成了各自的
+// 专属 boss（见 director.js 的 TIER_BOSS）。所以这里只测第 3 关。
+// 蛛皇的墙跳/爬墙/召唤等机制仍由后续断言覆盖。
+for(const tier of [3]) {
   const {director,enemies}=setup(tier);
   director.update(0.01);
   const boss=director._boss;
@@ -34,7 +37,9 @@ for(const tier of [3,6,10]) {
   enemies.damage(boss,100000,false,boss.pos,null);
   director.update(0.01);assert.equal(director.run.bossPending,false,'boss death unlocks mission');
 }
-assert.ok(health[0]<health[1] && health[1]<health[2]);
+// 只测第 3 关之后，跨层的血量递增改由 tools/test-tier-bosses.mjs 覆盖
+// （那边会遍历第 3~10 关各自的 boss）。
+assert.ok(health[0] > 0, '蛛皇血量应为正数');
 {
   const {enemies,p}=setup();const b=enemies.spawn('broodStalker',[0,0,2],{scale:1.6});b.age=2;
   enemies._updateAI(b,0.01,p);enemies._updateAI(b,0.23,p);

@@ -354,11 +354,14 @@ export class ProjectilePool {
         let stopped = false;
         for (let q = 0; q < intercepts.length; q++) {
           const s = intercepts[q];
-          const ddx = s.ox - this.px[i], ddy = s.oy - this.py[i], ddz = s.oz - this.pz[i];
-          // 玩家射线到子弹的最近距离（用射线-点距离近似）
+          // 注意方向：要算"**子弹相对射线原点**"的位移再往射线方向投影。
+          // 反过来算（射线原点相对子弹）会得到负的 along，永远判不在线上
+          // —— 这里踩过一次，表现为"拦截完全不生效、调用方却看不出来"。
+          const ddx = this.px[i] - s.ox, ddy = this.py[i] - s.oy, ddz = this.pz[i] - s.oz;
           const along = ddx * s.dx + ddy * s.dy + ddz * s.dz;
-          if (along < 0 || along > s.len) continue;
+          if (along < 0 || along > s.len) continue;       // 在射手背后或射程之外
           const cx2 = ddx - s.dx * along, cy2 = ddy - s.dy * along, cz2 = ddz - s.dz * along;
+          // 子弹体积大，容差给 0.9m，让"对着弹幕开枪"确实能打掉
           if (cx2 * cx2 + cy2 * cy2 + cz2 * cz2 <= 0.9 * 0.9) { stopped = true; break; }
         }
         if (stopped) {
