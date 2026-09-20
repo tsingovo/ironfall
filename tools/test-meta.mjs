@@ -81,14 +81,21 @@ test('阵亡是否写仓库由调用方决定，recordRun 本身不写入', () =
   assert.deepEqual(m.stashSnapshot().items, {});
 });
 
-test('关卡选择只允许已解锁的 1..10', () => {
+test('关卡无条件开放：新存档也能直接选任意一层', () => {
   const m = new MetaProgress({});
-  assert.equal(m.maxUnlockedTier(), 1);
-  assert.equal(m.setCurrentTier(2), false);
-  assert.equal(m.unlockTier(99), CAMPAIGN_TIER_COUNT);
-  assert.equal(m.setCurrentTier(10), true);
-  assert.equal(m.setCurrentTier(11), false);
-  assert.equal(m.currentTier(), 10);
+  // 需求变更：关卡不再锁定，十关随时可直接部署。
+  // 原先这里断言"新存档 setCurrentTier(2) === false"（不能跳关），
+  // 现在反过来 —— 只有非法层数才被拒。
+  assert.equal(m.maxUnlockedTier(), 1, '推进进度仍从第 1 关开始记录');
+  for (let tier = 1; tier <= CAMPAIGN_TIER_COUNT; tier++) {
+    assert.equal(m.isTierUnlocked(tier), true, `第 ${tier} 关应当可选`);
+    assert.equal(m.setCurrentTier(tier), true, `第 ${tier} 关应当能设为当前层`);
+    assert.equal(m.currentTier(), tier);
+  }
+  assert.equal(m.setCurrentTier(11), false, '越界层数仍要拒绝');
+  assert.equal(m.setCurrentTier(0), false, '越界层数仍要拒绝');
+  assert.equal(m.setCurrentTier(NaN), false, '非法值仍要拒绝');
+  assert.equal(m.currentTier(), CAMPAIGN_TIER_COUNT, '被拒后当前层不变');
 });
 
 test('战役推进在第一关解锁第二关，在第十关封顶', () => {

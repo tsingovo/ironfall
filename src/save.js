@@ -313,9 +313,17 @@ export class MetaProgress {
 
   maxUnlockedTier() { return this.unlocked.tiers; }
 
+  /**
+   * 该关卡是否可选。
+   *
+   * 需求：**关卡无条件开放，不锁定** —— 十关随时都能直接部署。
+   * 因此这里只校验"是不是合法层数"，不再比对 unlocked.tiers。
+   * unlocked.tiers 仍然记录实际推进到第几关（用于把界面上的"已撤离"标记
+   * 与结算难度缩放），但它**不再是准入条件**。
+   */
   isTierUnlocked(tier) {
     const n = Math.trunc(+tier);
-    return Number.isFinite(n) && n >= 1 && n <= this.unlocked.tiers && n <= CAMPAIGN_TIER_COUNT;
+    return Number.isFinite(n) && n >= 1 && n <= CAMPAIGN_TIER_COUNT;
   }
 
   /** 解锁指定关卡；返回最终解锁上限。不会越过第 10 关。 */

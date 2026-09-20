@@ -79,12 +79,25 @@ const MENU_SPEC = {
     tag: 'CAMPAIGN // 01—10',
     title: '战役选择',
     sub: 'EXPEDITION TIERS',
-    note: '撤离成功会解锁下一关。选择已解锁任务后立即部署。',
+    note: '十关全部开放，随时可直接部署。层数越高，守关首领与压力越强。',
     campaign: true,
     items: Array.from({ length: 10 }, (_v, i) => ({
-      key: String(i + 1), label: `第 ${i + 1} 关`, sub: 'LOCKED', intent: 'select_mission', tier: i + 1,
+      key: String(i + 1), label: `第 ${i + 1} 关`, sub: '可部署', intent: 'select_mission', tier: i + 1,
       primary: i === 0,
     })).concat([{ key: '0', label: '返回', sub: 'BACK', intent: 'open_main' }]),
+  },
+  // ESC 菜单里的"切换关卡"面板：条目结构与战役选择完全相同，只是意图不同。
+  // 从游戏内打开，切换后立即在新地图重新部署，且**保留背包/配件/强化加成**。
+  switch_tier: {
+    tag: 'SWITCH TIER // 01—10',
+    title: '切换关卡',
+    sub: 'REDEPLOY',
+    note: '十关全部开放。切换后立即在新地图重新部署 —— 背包、配件与强化加成都会保留。',
+    campaign: true,
+    items: Array.from({ length: 10 }, (_v, i) => ({
+      key: String(i + 1), label: `第 ${i + 1} 关`, sub: '可部署', intent: 'switch_tier', tier: i + 1,
+      primary: i === 0,
+    })).concat([{ key: '0', label: '返回', sub: 'BACK', intent: 'close_menu' }]),
   },
   armory: {
     tag: 'META ARMORY',
@@ -154,8 +167,9 @@ const MENU_SPEC = {
     settings: true,
     items: [
       { key: '1', label: '返回游戏', sub: 'RESUME', intent: 'close_menu', primary: true },
-      { key: '2', label: '返回主菜单', sub: '放弃当前远征', intent: 'quit_to_menu', danger: true },
-      { key: '3', label: '退出游戏', sub: 'EXIT TO DESKTOP', intent: 'quit_game', danger: true },
+      { key: '2', label: '切换关卡', sub: 'SWITCH TIER · 保留背包与加成', intent: 'open_switch_tier' },
+      { key: '3', label: '返回主菜单', sub: '放弃当前远征', intent: 'quit_to_menu', danger: true },
+      { key: '4', label: '退出游戏', sub: 'EXIT TO DESKTOP', intent: 'quit_game', danger: true },
     ],
   },
   help: {
@@ -2623,16 +2637,19 @@ export class HUD {
     if (spec.campaign) {
       const meta = this.ctx && this.ctx.meta;
       const missions = (this.ctx && this.ctx.missions) || [];
-      const unlocked = Math.max(1, Math.min(10, num(meta && meta.unlocked && meta.unlocked.tiers, 1)));
+      // 需求：关卡无条件开放，不锁定。
+      // 十关全部可选，只显示任务名与地图，不再出现"未解锁"、也不再置灰。
+      // 已撤离过的层数仍标一下，给玩家一个进度参考。
+      const cleared = Math.max(0, Math.min(10, num(meta && meta.unlocked && meta.unlocked.tiers, 1) - 1));
       for (const entry of (this._menuItems[kind] || [])) {
         const tier = entry.spec.tier;
         if (!tier) continue;
         const mission = missions[tier - 1] || {};
-        const locked = tier > unlocked;
+        const done = tier <= cleared && num(meta && meta.bestTier, 0) >= tier;
         this._text(entry.label, `第 ${tier} 关 · ${mission.title || '未知任务'}`);
-        this._text(entry.sub, locked ? '未解锁' : (mission.world || '可部署'));
-        entry.spec.disabled = locked;
-        this._cls(entry.el, 'menu-item--disabled', locked);
+        this._text(entry.sub, `${mission.world || '可部署'}${done ? ' · 已撤离' : ''}`);
+        entry.spec.disabled = false;
+        this._cls(entry.el, 'menu-item--disabled', false);
       }
     }
     if (spec.armory) {

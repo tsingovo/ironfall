@@ -214,16 +214,27 @@ export class InventorySystem {
   }
 
   reset(world, seed = 1, opts = {}) {
-    this.slots.fill(null);
+    // 需求：切换关卡时保留背包与配件。
+    // preserve=true 只做"换图"该做的事：重铺地面掉落、关掉界面。
+    // 不清 slots（背包内容），也不动武器上的已装配件；同时**不再补发初始物资**——
+    // 否则每切一关就白送 4 件道具，切几次背包就满了。
+    const preserve = !!(opts && opts.preserve);
+    if (!preserve) {
+      this.slots.fill(null);
+      if (this.weapons && typeof this.weapons.clearLootAttachments === 'function') {
+        this.weapons.clearLootAttachments();
+      }
+    }
     this.drops.length = 0;
     this.nearDrop = null;
-    if (this.weapons && typeof this.weapons.clearLootAttachments === 'function') this.weapons.clearLootAttachments();
     this.setOpen(false);
-    // 给第一轮背包操作留出可验证内容，同时仍要求玩家去地图上搜更高价值物品。
-    this.add('medkit', 1);
-    this.add('shield_battery', 1);
-    this.add('syringe', 1);
-    this.add('shield_cell', 1);
+    if (!preserve) {
+      // 给第一轮背包操作留出可验证内容，同时仍要求玩家去地图上搜更高价值物品。
+      this.add('medkit', 1);
+      this.add('shield_battery', 1);
+      this.add('syringe', 1);
+      this.add('shield_cell', 1);
+    }
     this.seedWorldLoot(world, seed);
     if (opts && opts.carry) this.importCarry(opts.carry);
     this.renderUI();

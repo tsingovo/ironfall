@@ -531,7 +531,13 @@ class Game {
     });
     this.mapName = mapData.name || mission.title;
     this.world.load(mapData);
-    if (this.inventory) this.inventory.reset(this.world, seed);
+    // 需求：切换关卡不重置背包与配件。
+    // preserve 时 inventory.reset 只换地图掉落，不清空背包槽与已装配件。
+    // （联机时房客也会走这条路径重载地图，所以两边都能保住自己的背包。）
+    if (this.inventory) {
+      this.inventory.reset(this.world, seed, { preserve: !!this._preserveOnNextLoad });
+    }
+    this._preserveOnNextLoad = false;
     this._spawnCache = null;   // 换图必须重算出生点
     const biome = getBiome(mission.biome) || BIOMES.industrial_forge;
     this.biome = biome;
@@ -627,7 +633,18 @@ class Game {
     } catch (_e) { /* 忽略 */ }
   }
 
-  startRun() {
+  /**
+   * 开始/切换一局。
+   *
+   * @param opts.preserveProgress 切换关卡时保留背包、配件与强化加成。
+   *   从主菜单"战役选择"或 ESC 菜单"切换关卡"进入时都带这个选项 ——
+   *   换图不应该把玩家这一局攒的东西清空。
+   *   不带时（首次部署、战败重开）保持原语义：一切从头开始。
+   */
+  startRun(opts) {
+    const o = opts || {};
+    const preserve = !!o.preserveProgress;
+    this._preserveOnNextLoad = preserve;
     // 音频：必须在用户手势的同步调用栈里创建/恢复 AudioContext，
     // 否则浏览器会拒绝，表现为"完全没有音效且不报错"。
     this._ensureAudio();
@@ -651,7 +668,10 @@ class Game {
     this.setPlaying(true);
     if (this.hud) { this.hud.hideMenu(); this.hud.setVisible(true); }
 
-    if (this.weapons && typeof this.weapons.resetLoadout === 'function') this.weapons.resetLoadout();
+    // 保留进度时不要重铸配装：玩家自己装好的配件不能被换关冲掉。
+    if (!preserve && this.weapons && typeof this.weapons.resetLoadout === 'function') {
+      this.weapons.resetLoadout();
+    }
     // 联机时房主把本局种子随 SESSION 广播，双方必须用同一颗种子和同一张任务图；
     // _pendingLanStart 由 _onLanSessionStart 在房客侧填好。
     const lanStart = this._pendingLanStart;
@@ -678,8 +698,11 @@ class Game {
     this.decals.clear();
     this.shake.reset();
 
-    this.upgrades.reset();
-    this.upgrades.alloy = 0;
+    // 保留进度时不要清空强化加成与合金（需求：切关不重置加成）。
+    if (!preserve) {
+      this.upgrades.reset();
+      this.upgrades.alloy = 0;
+    }
     this.upgrades.setTier ? this.upgrades.setTier(this.tier) : null;
 
     this.run.start(this.tier, this.mapIndex);
@@ -1043,18 +1066,32 @@ class Game {
       case 'open_campaign':
         if (this.hud) this.hud.showMenu('campaign');
         break;
+      case 'open_switch_tier':
+        // ESC 菜单里的"切换关卡"入口：游玩中打开，冻结游戏但不退房。
+        if (this._playing) this.openMenuPanel('switch_tier', { freeze: true });
+        else if (this.hud) this.hud.showMenu('switch_tier');
+        break;
+      case 'switch_tier': {
+        // 游玩中直接换关：**保留背包、配件与强化加成**，只换地图重新部署。
+        // 联机时房主换关会经 _afterLanRunStart 广播新的 SESSION，
+        // 房客自动重载同一张图（他们的背包同样保留）。
+        const tier = Math.max(1, Math.min(10, Number(payload && payload.tier) | 0));
+        if (this.menuKind) this.closeMenuPanel();
+        this._switchTierKeepProgress(tier);
+        break;
+      }
       case 'select_mission': {
         const tier = Math.max(1, Math.min(10, Number(payload && payload.tier) | 0));
-        const unlocked = Math.max(1, Math.min(10, Number(this.meta.unlocked && this.meta.unlocked.tiers) || 1));
-        if (tier > unlocked) {
-          if (this.hud) this.hud.toast('任务尚未解锁', `先完成第 ${tier - 1} 关并成功撤离`, 'warn');
-          break;
-        }
+        // 需求：**关卡无条件开放，不锁定**。
+        // 早先这里会拦下"超出已解锁层数"的选择并提示"任务尚未解锁"，
+        // 现在十关随时可以直接部署，方便测试与跳关。
+        // 仍然记录当前层，因为导演的难度缩放与结算都读它。
+        //
+        // 从主菜单进来时也保留背包/配件/加成（与 ESC 菜单的切换关卡一致）——
+        // 换图不该把玩家这一局攒的东西清空。
         if (typeof this.meta.setCurrentTier === 'function') this.meta.setCurrentTier(tier);
         this.meta.persist();
-        this.tier = tier;
-        this.mapIndex = tier - 1;
-        this.startRun();
+        this._switchTierKeepProgress(tier);
         break;
       }
       case 'open_armory':
@@ -2192,6 +2229,24 @@ class Game {
       }
     }
     return list;
+  }
+
+  /**
+   * 切换到指定关卡并**保留背包 / 配件 / 强化加成**，只换地图重新部署。
+   *
+   * 这是主菜单"战役选择"与 ESC 菜单"切换关卡"共用的落地实现 ——
+   * 两条路径的行为必须一致，否则玩家会发现"从主菜单换关会清空背包"。
+   *
+   * 联机：房主换关后 _afterLanRunStart 会检测到 mapIndex/seed 变化并广播
+   * 新的 SESSION，房客据此重载同一张图（他们的背包同样走 preserve 路径保留）。
+   */
+  _switchTierKeepProgress(tier) {
+    const next = Math.max(1, Math.min(10, Number(tier) | 0)) || 1;
+    this.tier = next;
+    this.mapIndex = next - 1;
+    if (this.hud) this.hud.hideMenu();
+    this.startRun({ preserveProgress: true });
+    return true;
   }
 
   _interact(dt, input) {
