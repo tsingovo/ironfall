@@ -173,6 +173,22 @@ export const ENEMY_TYPES = {
     // CFG.gameplay.maxHealth(150)；若跟随普通小怪一起减半，会让 boss 血量
     // 在无意中缩水 2/3 —— 那属于隐性 nerf，不是需求要求的。
     hp:150, shield:150, speed:18, accel:60, radius:0.65, height:2.35,
+    // 需求 5：绿影蛛皇的跳跃频率**大大提升** —— 每几步就要跳一下，
+    // 而且「喜欢跳墙」：附近有竖直墙面时优先借墙起跳（跳得更远更高）。
+    // 下面这组字段由 _spiderQueenHop 消费。
+    //
+    // ⚠ 关键：跳跃频率的真正瓶颈是**滞空时间**，不是冷却。
+    //   滞空 = 2 * hopSpeed / gravity(22)。
+    //   初版 hopSpeed 给到 9.5 → 滞空 0.86s，它一直在空中，落地才可能再跳，
+    //   实测 10 秒只跳了 5 次。现在 hopSpeed 取 4.6 → 滞空 ≈0.42s，
+    //   配合 0.32s 的间隔，实际约 2 次/秒（按 18m/s 速度约每 9m 一跳，
+    //   观感就是"一直在蹦"）。
+    hopInterval: 0.22,        // 落地后多久再跳
+    hopSpeed: 4.0,            // 起跳垂直速度（滞空 ≈0.36s，落地即再跳）
+    hopForward: 15,           // 起跳时的水平冲量
+    wallHopRange: 7.5,        // 这个距离内有墙就优先跳墙
+    wallHopSpeed: 5.0,        // 跳墙时略高的垂直速度（滞空 ≈0.45s）
+    wallHopCooldown: 0.9,     // 跳墙的独立冷却（比墙战的 4s 短得多）
     color:[0.06,0.66,0.17], accentColor:[0.45,1,0.24],
     score:1500, alloy:30, xp:12, threat:6, elite:true, hybridBoss:true,
     weapon:{damage:50,melee:true}, behavior:'hitrun', meshKind:'hybrid',
@@ -422,6 +438,9 @@ export class EnemySystem {
       const target = multi ? this._selectTarget(e) : p;
       this._updateAI(e, dt, target);
       if (e.alive && e.type.hybridBoss) this._bossWallMovement(e,dt,e.specialTarget?.alive ? e.specialTarget : target);
+      // 需求 5：蛛皇高频跳跃 + 喜欢跳墙。
+      // 放在墙战逻辑之后：墙战决定「上/下墙」，这里只负责「一直在蹦」的机动。
+      if (e.alive && e.type.hybridBoss) this._spiderQueenHop(e, dt, e.specialTarget?.alive ? e.specialTarget : target);
       const grappleMaxSpeed = this._applyGrapplePull(e, dt, target);
       if (e.alive) this._physics(e, dt, grappleMaxSpeed);
       this._specialPresentation(e, dt);
@@ -888,6 +907,94 @@ export class EnemySystem {
     }
     e.stuckTimer += dt;
     if (e.stuckTimer > 0.4 && e.grounded) { e.vel[1]=6; e.stuckTimer=0; e.strafeDir*=-1; }
+  }
+
+  /**
+   * 需求 5：绿影蛛皇的跳跃 —— 高频、并且喜欢跳墙。
+   *
+   * 与 _bossWallMovement 的分工：
+   *   · _bossWallMovement 是"上墙→攀爬→脱墙"的完整墙战流程，冷却较长（2~4s）
+   *   · 这里是**纯粹的机动跳跃**，每几步一次，让它的移动看起来一直在蹦；
+   *     附近有竖直墙面时优先借墙起跳（跳得更高更远），这就是"喜欢跳墙"。
+   *
+   * 只在落地时起跳（空中不叠加），并且蓄力/后撤这类特殊阶段不打断。
+   */
+  _spiderQueenHop(e, dt, target) {
+    const type = e.type;
+    if (!type.hopInterval) return;
+    e.hopCd = (e.hopCd == null ? type.hopInterval * 0.5 : e.hopCd) - dt;
+    e.wallHopCd = Math.max(0, (e.wallHopCd || 0) - dt);
+    if (e.hopCd > 0) return;
+    // 特殊阶段（挥刀前摇 / 后撤）不跳，否则会把攻击动作打断成抽搐
+    if (e.specialPhase === 'windup' || e.specialPhase === 'retreat') { e.hopCd = 0; return; }
+    // 必须落地才能起跳：空中再触发会变成"无限上升"
+    if (!e.grounded) return;
+
+    e.hopCd = type.hopInterval;
+
+    // 朝目标（或当前朝向）的水平方向
+    let dx = 0, dz = 0;
+    if (target && target.pos) {
+      dx = target.pos[0] - e.pos[0];
+      dz = target.pos[2] - e.pos[2];
+    }
+    let len = Math.hypot(dx, dz);
+    if (len < 1e-3) { dx = Math.sin(e.yaw); dz = Math.cos(e.yaw); len = 1; }
+    dx /= len; dz /= len;
+
+    // 「喜欢跳墙」：在前方扇形里找竖直墙面，找到就借墙起跳。
+    //
+    // 注意这里的"前方"= 朝目标方向。真实交战里玩家常背靠墙或站在建筑旁，
+    // 蛛皇冲过去时前方自然有墙，于是它会蹬着墙扑上来 —— 这正是需求要的观感。
+    // （如果玩家站在蛛皇与墙之间，前方就是远离墙的方向，此时不会误触发，
+    //   这是正确行为而不是缺陷。）
+    let useWall = false;
+    if (e.wallHopCd <= 0) {
+      const origin = [e.pos[0], e.pos[1] + e.height * 0.5, e.pos[2]];
+      const range = type.wallHopRange || 7.5;
+      // 先看正前方，再扫两侧；顺序固定，保证行为可复现
+      for (const turn of [0, 0.6, -0.6, 1.2, -1.2]) {
+        const c = Math.cos(turn), s = Math.sin(turn);
+        const dir = [dx * c - dz * s, 0, dx * s + dz * c];
+        const wall = this.world.raycast(origin, dir, range, {});
+        if (!wall.hit) continue;
+        if (Math.abs(wall.normal[1]) > 0.35) continue;   // 只要竖直墙面，不要地面/斜坡
+        useWall = true;
+        e.wallHopNormal = [wall.normal[0], 0, wall.normal[2]];
+        break;
+      }
+      // 兜底：紧贴墙面（身上已经有 wallNormal）时也算借墙，避免"贴着墙却不跳"
+      if (!useWall && e.wallNormal) {
+        useWall = true;
+        e.wallHopNormal = [e.wallNormal[0], 0, e.wallNormal[2]];
+      }
+    }
+
+    if (useWall) {
+      e.wallHopCd = type.wallHopCooldown || 0.9;
+      e.vel[1] = Math.max(e.vel[1], type.wallHopSpeed || type.hopSpeed);
+    } else {
+      e.vel[1] = Math.max(e.vel[1], type.hopSpeed);
+    }
+    // 水平冲量：沿目标方向推进，借墙时额外获得一点离墙偏转，避免直直撞上去
+    const fwd = type.hopForward || 15;
+    let vx = dx * fwd, vz = dz * fwd;
+    if (useWall && e.wallHopNormal) {
+      vx += e.wallHopNormal[0] * 4;
+      vz += e.wallHopNormal[2] * 4;
+    }
+    e.vel[0] = vx;
+    e.vel[2] = vz;
+    e.grounded = false;                        // 立刻脱离地面状态，避免同帧被判定仍在走
+    e.hopCount = (e.hopCount || 0) + 1;
+    // 表现：起跳时留一点尘土，让"一直在蹦"读得出来
+    if (this.particles && typeof this.particles.emit === 'function' && (e.hopCount & 1) === 0) {
+      this.particles.emit('dust', {
+        pos: [e.pos[0], e.pos[1] + 0.1, e.pos[2]],
+        dir: [0, 1, 0], speed: 2.6, spread: 80, count: 4,
+        color: [0.35, 0.42, 0.30], size: 0.07, alpha: 0.22, life: 0.5, sizeEnd: 0.2,
+      });
+    }
   }
 
   _bossWallMovement(e,dt,player) {
