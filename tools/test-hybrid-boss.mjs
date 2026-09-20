@@ -24,9 +24,13 @@ for(const tier of [3,6,10]) {
   const boss=director._boss;
   assert.equal(boss.typeId,'broodStalker');
   assert.equal(boss.type.speed,18);assert.equal(boss.type.weapon.damage,50);
-  assert.ok(boss.maxHp>=CFG.gameplay.maxHealth*(5+tier));
+  // BOSS 血量与护盾的基准来自**兵种表**（ENEMY_TYPES.broodStalker），
+  // 不再取全局 CFG（需求 13 取消了敌人与玩家共用基线）。
+  // director 会在此基础上乘 (5+tier) 与层数修正。
+  const base = ENEMY_TYPES.broodStalker;
+  assert.ok(boss.maxHp>=base.hp*(5+tier));
   health.push(boss.maxHp);
-  assert.equal(boss.shield,CFG.gameplay.maxShield*3);
+  assert.equal(boss.shield,base.shield*3);
   enemies.damage(boss,100000,false,boss.pos,null);
   director.update(0.01);assert.equal(director.run.bossPending,false,'boss death unlocks mission');
 }

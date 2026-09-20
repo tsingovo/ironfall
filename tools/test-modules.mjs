@@ -516,8 +516,10 @@ if (en) {
     stalker: [50, 0],
     // 需求 13：炸蛛无护盾、血量减半
     blastSpider: [MOB_HP, 0],
-    // 蛛皇 BOSS：基础值由 director 生成时按层数放大，保持原样
-    broodStalker: [100, 100],
+    // 蛛皇 BOSS：基础值由 director 生成时乘 (5+tier) 放大。
+    // 基准对齐到 150 —— 表驱动改造前它的实际起点就是全局 maxHealth(150)，
+    // 若跟着小怪减半会让 boss 血量无端缩水 2/3。
+    broodStalker: [150, 150],
   };
   const statBad = [];
   for (const id of ids) {
@@ -532,14 +534,43 @@ if (en) {
     statBad.length ? statBad.join('; ') : `${ids.length} 个兵种数值符合需求`);
   check('需求13：绿影与炸蛛的护盾严格为 0',
     en.ENEMY_TYPES.stalker.shield === 0 && en.ENEMY_TYPES.blastSpider.shield === 0);
+
+  // ⚠ 关键护栏：**生成时真的用了兵种表里的数值**。
+  //
+  // 这里踩过一次很隐蔽的坑：ENEMY_TYPES 里明明写了 hp/shield，但 spawn() 实际
+  // 取的是全局 CFG.gameplay.maxHealth/maxShield，兵种字段**从未被读取**——
+  // 于是需求 13 只改了数据表，运行时敌人血量毫无变化，光看表还以为改对了。
+  // 这条断言同时比对"表"与"实际生成结果"，才能发现这类脱节。
+  {
+    const probe = new en.EnemySystem({ navCandidates: () => [] },
+      { radius: cfg.CFG.move.capsuleRadius, height: cfg.CFG.move.capsuleHeight }, null);
+    const mismatch = [];
+    let checked = 0;
+    for (const id of ids) {
+      const def = en.ENEMY_TYPES[id];
+      if (def.hybridBoss) continue;             // BOSS 的血量由 director 生成时放大
+      const e = probe.spawn(id, [0, 0, 0]);
+      checked++;
+      if (e.maxHp !== def.hp || e.maxShield !== def.shield) {
+        mismatch.push(`${id}: 实际 ${e.maxHp}/${e.maxShield}，表里 ${def.hp}/${def.shield}`);
+      }
+    }
+    check('生成敌人的 hp/shield 来自兵种表（不是全局基线）',
+      mismatch.length === 0,
+      mismatch.length ? mismatch.slice(0, 4).join('; ') : `${checked} 个兵种一致`);
+  }
   check('虫群体积放大且攻击环不再位于玩家脚下', en.ENEMY_TYPES.swarm.baseScale >= 1.5
     && en.ENEMY_TYPES.swarm.preferredRange >= 1.8
     && en.enemyBaseScale(en.ENEMY_TYPES.swarm) >= 1.5);
   const enemyProbe = new en.EnemySystem({}, { radius: cfg.CFG.move.capsuleRadius }, null);
   enemyProbe.setDifficulty(4);
   const spawned = enemyProbe.spawn('heavy', [0, 0, 0], { hpMul: 99 });
-  check('敌人生成时不会被难度或 hpMul 改写统一血池', spawned.maxHp === cfg.CFG.gameplay.maxHealth
-    && spawned.maxShield === cfg.CFG.gameplay.maxShield && spawned.spawnAttackLock >= 1.5);
+  // 断言"难度与 hpMul 不能暗中放大血池"这个**意图**，但数值基准已变更：
+  // 需求 13 取消了"敌人与玩家共用生存基线"，改成以兵种表为准。
+  // 所以这里从 CFG.gameplay.maxHealth 换成 ENEMY_TYPES.heavy.hp —— 意图不变，基准更新。
+  check('敌人生成时不会被难度或 hpMul 改写血池',
+    spawned.maxHp === en.ENEMY_TYPES.heavy.hp
+    && spawned.maxShield === en.ENEMY_TYPES.heavy.shield && spawned.spawnAttackLock >= 1.5);
   check('敌方伤害全局降低到合理区间', en.ENEMY_DAMAGE_SCALE >= 0.25 && en.ENEMY_DAMAGE_SCALE <= 0.45,
     `damageScale=${en.ENEMY_DAMAGE_SCALE}`);
 

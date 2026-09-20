@@ -18,7 +18,7 @@ const userDataDir = join(tmpdir(), 'ironfall-sa-' + Date.now());
 await mkdir(userDataDir, { recursive: true });
 const proc = spawn(requireChrome('verify-standalone'), headlessArgs(userDataDir, [
   '--window-size=1600,900',
-  '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader',
+  
   // 不添加 --allow-file-access-from-files：就是要验证"默认浏览器设置下能否直接跑"
   'about:blank',
 ]), { stdio: ['ignore', 'pipe', 'pipe'] });

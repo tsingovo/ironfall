@@ -1939,6 +1939,19 @@ class Game {
     requestAnimationFrame(this._boundFrame);
 
     const nowMs = typeof now === 'number' ? now : performance.now();
+    // 帧率上限（设置里的「帧率上限」）。
+    //
+    // 之前这个设置**只被赋值、从未被读取** —— 选了 60 帧也照样跑无上限，
+    // 属于「看起来有的功能其实没接线」。这里补上真正的节流：
+    // 未到最小帧间隔就跳过本帧全部工作（物理与渲染都不跑）。
+    // 无头自动化测试会把 fpsCap 设成 30 来压低 CPU 占用。
+    const cap = CFG.render.targetFpsCap | 0;
+    if (cap > 0 && this._capLastMs) {
+      // 留 1ms 容差：计时抖动不该把本该跑的帧丢掉（否则实际帧率会掉一半）
+      if (nowMs - this._capLastMs < (1000 / cap) - 1) return;
+    }
+    this._capLastMs = nowMs;
+
     let dt = (nowMs - this.lastTime) / 1000;
     this.lastTime = nowMs;
     if (!isFinite(dt) || dt < 0) dt = 0;

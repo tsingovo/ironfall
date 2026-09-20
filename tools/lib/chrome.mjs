@@ -59,7 +59,34 @@ export function requireChromeOrNull() {
   return findChrome();
 }
 
-/** 无头 Chrome 的通用启动参数 */
+/**
+ * 图形后端参数：**优先用真实 GPU，而不是软件渲染**。
+ *
+ * 背景（用户反馈「测试把我电脑卡死 / 能用 GPU 吗」）：
+ *   测试脚本原先硬编码 `--use-angle=swiftshader`，那是**纯 CPU 软件光栅化**，
+ *   整个游戏循环（渲染 + 上万三角 + 怪物 AI）全压在 CPU 上，测试期间能把
+ *   24 核的机器吃满。而这台机器有 RTX 4070 —— 实测无头 Chrome **完全能用**：
+ *       swiftshader → ANGLE (SwiftShader Device)          ← CPU
+ *       d3d11       → ANGLE (NVIDIA RTX 4070 ... D3D11)   ← GPU ✅
+ *   既然有 GPU 就不该用 CPU 渲染。
+ *
+ * 这里不指定 `--use-angle`，交给 Chrome 自动选（实测在 Windows 上会选到
+ * D3D11 + 真实 GPU）；只有在需要强制软件渲染时才显式传 swiftshader。
+ * 需要兼容"没有 GPU 的机器"时，用 IRONFALL_SOFTWARE_GL=1 强制回退。
+ */
+export function glArgs() {
+  if (process.env.IRONFALL_SOFTWARE_GL === '1') {
+    // 显式要求软件渲染（CI / 无 GPU 环境）
+    return ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'];
+  }
+  // 默认交给 Chrome 自动探测：有 GPU 就用 GPU。
+  // --enable-gpu 让无头也启用 GPU 合成；它在新版里已默认开启，这里显式声明意图。
+  return ['--enable-gpu'];
+}
+
+/**
+ * 无头 Chrome 的通用启动参数。
+ */
 export function headlessArgs(userDataDir, extra) {
   return [
     '--headless=new',
@@ -71,6 +98,10 @@ export function headlessArgs(userDataDir, extra) {
     '--disable-extensions',
     '--disable-background-networking',
     '--mute-audio',
+    // 图形后端：优先真实 GPU（见 glArgs 的说明），不再无脑用软件渲染
+    ...glArgs(),
+    // 固定 1x 缩放，避免高 DPI 放大渲染量
+    '--force-device-scale-factor=1',
     ...(extra || []),
   ];
 }

@@ -14,13 +14,17 @@ export const ACTIONS = {
   right: ['KeyD', 'ArrowRight'],
   jump: ['Space'],
   crouch: ['ControlLeft', 'KeyC'],
-  sprint: ['ShiftLeft'],
+  // 需求：默认冲刺键改为 V。
+  // 注意 V 原本是近战，因此近战挪到相邻的 B（避开已占用的 R/B? —— B 是充能键，
+  // 所以近战用 KeyF）。同时保留 ShiftLeft 作为等价键，老习惯不会失效。
+  sprint: ['KeyV', 'ShiftLeft'],
   reload: ['KeyR'],
   charge: ['KeyB'],
   // Apex 风格：Q 是战术技能；IRONFALL 额外 dash 放 Alt，避免抢占核心键。
   dash: ['AltLeft'],
   grapple: ['KeyQ'],
-  melee: ['KeyV'],
+  // 近战：因冲刺占用 V 而改到 F（F 原本空闲）
+  melee: ['KeyF'],
   interact: ['KeyE'],
   // Apex 风格治疗键：轻按使用当前选中的药品，长按打开药品轮盘。
   heal: ['Digit5'],

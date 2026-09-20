@@ -194,9 +194,6 @@ async function launchChrome(exe, userDataDir) {
     '--window-size=1600,900',
     // 无头环境没有 GPU：用 SwiftShader 软件渲染保证 WebGL2 可用
     // （帧率数字仅代表"功能可用"，不代表真机性能）
-    '--use-gl=angle',
-    '--use-angle=swiftshader',
-    '--enable-unsafe-swiftshader',
     '--enable-webgl',
     '--ignore-gpu-blocklist',
     'about:blank',

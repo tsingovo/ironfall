@@ -64,8 +64,7 @@ class Client {
     const fd = openSync(this.logPath, 'w');
     try {
       this.proc = spawn(chrome, headlessArgs(this.userDataDir, [
-        '--window-size=1280,720', '--use-gl=angle', '--use-angle=swiftshader',
-        '--enable-unsafe-swiftshader', 'about:blank',
+        '--window-size=1280,720', 'about:blank',
       ]), { stdio: ['ignore', fd, fd] });
     } finally {
       closeSync(fd);

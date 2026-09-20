@@ -38,7 +38,7 @@ const userDataDir = join(tmpdir(), 'ironfall-vf-' + Date.now());
 await mkdir(userDataDir, { recursive: true });
 const CHROME = requireChrome('test-ui-input');
 const proc = spawn(CHROME, headlessArgs(userDataDir, [
-  '--window-size=1600,900', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader',
+  '--window-size=1600,900', 
   'about:blank',
 ]), { stdio: ['ignore', 'pipe', 'pipe'] });
 const portFile = join(userDataDir, 'DevToolsActivePort');

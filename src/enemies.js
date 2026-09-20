@@ -168,7 +168,11 @@ export const ENEMY_TYPES = {
   },
   broodStalker: {
     id:'broodStalker', name:'绿影蛛皇', nameCN:'绿影蛛皇',
-    hp:100, shield:100, speed:18, accel:60, radius:0.65, height:2.35,
+    // 蛛皇 BOSS：血量/护盾基准取玩家基线量级（150），因为 director 会在生成时
+    // 直接乘 `(5 + tier)`。改成兵种表驱动之前，这里的实际起点就是全局的
+    // CFG.gameplay.maxHealth(150)；若跟随普通小怪一起减半，会让 boss 血量
+    // 在无意中缩水 2/3 —— 那属于隐性 nerf，不是需求要求的。
+    hp:150, shield:150, speed:18, accel:60, radius:0.65, height:2.35,
     color:[0.06,0.66,0.17], accentColor:[0.45,1,0.24],
     score:1500, alloy:30, xp:12, threat:6, elite:true, hybridBoss:true,
     weapon:{damage:50,melee:true}, behavior:'hitrun', meshKind:'hybrid',
@@ -301,11 +305,17 @@ export class EnemySystem {
   spawn(typeId, pos, opts = {}) {
     const type = ENEMY_TYPES[typeId] || ENEMY_TYPES.grunt;
     const o = opts || {};
-    const d = this.difficulty;
-    // 玩家与所有敌人使用同一套 100/100 生存基线。兵种强弱由武器、机动、体型和
-    // 行为体现，不再暗中乘难度 HP，避免重装/虫群出现数倍于玩家的隐性血池。
-    const maxHp = Math.round(CFG.gameplay.maxHealth);
-    const maxShield = Math.round(CFG.gameplay.maxShield);
+    const d = this.difficulty;      // 难度：只作用于伤害/精度倍率（见下方 damageMul/accuracyMul）
+    // 生存数值取**兵种自己的定义**（ENEMY_TYPES[id].hp / .shield）。
+    //
+    // ⚠ 这里原本写的是 `Math.round(CFG.gameplay.maxHealth)` —— 也就是所有敌人
+    // 共用玩家的全局基线，兵种表里的 hp/shield 字段**从未被读取过**。
+    // 后果是需求 13（绿影/炸蛛去护盾、其他小怪减半）只改了数据表、运行时毫无变化。
+    // 现在改为以兵种表为准，并保留全局值作为缺字段时的回退。
+    const fallbackHp = Math.round(CFG.gameplay.maxHealth);
+    const fallbackShield = Math.round(CFG.gameplay.maxShield);
+    const maxHp = Number.isFinite(type.hp) ? Math.round(type.hp) : fallbackHp;
+    const maxShield = Number.isFinite(type.shield) ? Math.round(type.shield) : fallbackShield;
 
     const e = this._free.pop() || {};
     // 联机时房客必须沿用房主分配的 id，才能让命中申报与快照对上同一只敌人。
@@ -425,6 +435,129 @@ export class EnemySystem {
       this.all[k++] = e;
     }
     this.all.length = k;
+
+    // 需求 3：绿影（stalker）具有碰撞体积，且小范围人数过多时会自相残杀。
+    // 放在主循环之后统一处理：需要看到全部绿影的最终位置才能算簇。
+    if (!this.replicated) this._updateStalkerPack(dt);
+  }
+
+  /**
+   * 绿影族群逻辑（需求 3）。
+   *
+   * 规则：
+   *   · 绿影有**碰撞体积** —— 互相推开，不再重叠成一坨
+   *   · 4m 范围内超过 4 只时，多出来的会**互相攻击、自相残杀**，
+   *     直到该范围内只剩 4 只为止
+   *   · 击杀同类后自身状态**回满到原上限的 2 倍**、速度升到 22m/s、
+   *     横向移动变得更夸张
+   *   · BOSS **不参与**这套逻辑，也**不被绿影识别为同类**
+   *
+   * 为什么单独一遍而不是塞进每只的 AI：簇的判定是"这对多"的关系，
+   * 逐只处理会出现先后顺序导致的结果不一致（先处理的已经把邻居杀了）。
+   */
+  _updateStalkerPack(dt) {
+    const all = this.all;
+    // 收集本帧活着的绿影（排除 BOSS 与蛛皇 —— 它们不算同类、也不受此逻辑影响）
+    const pack = this._stalkerScratch || (this._stalkerScratch = []);
+    pack.length = 0;
+    for (let i = 0; i < all.length; i++) {
+      const e = all[i];
+      if (!e.alive) continue;
+      if (e.typeId !== 'stalker') continue;
+      if (e.type.hybridBoss) continue;          // BOSS 不被识别为同类
+      pack.push(e);
+    }
+    if (pack.length < 2) return;
+
+    const RADIUS = 4.0;                          // 需求：4m 范围内
+    const LIMIT = 4;                             // 需求：只允许 4 只以下
+    const R2 = RADIUS * RADIUS;
+
+    // ---- 1) 碰撞体积：互相推开，避免重叠
+    for (let i = 0; i < pack.length; i++) {
+      const a = pack[i];
+      for (let j = i + 1; j < pack.length; j++) {
+        const b = pack[j];
+        let dx = b.pos[0] - a.pos[0];
+        let dz = b.pos[2] - a.pos[2];
+        const minD = (a.radius || 0.4) + (b.radius || 0.4);
+        let d2 = dx * dx + dz * dz;
+        if (d2 >= minD * minD) continue;
+        let d = Math.sqrt(d2);
+        if (d < 1e-4) {                          // 完全重合：给一个确定性的分离方向
+          dx = ((i % 2) ? 1 : -1) * 0.01;
+          dz = ((j % 2) ? 1 : -1) * 0.01;
+          d = 0.0142;
+        }
+        const push = (minD - d) * 0.5;
+        const nx = dx / d, nz = dz / d;
+        a.pos[0] -= nx * push; a.pos[2] -= nz * push;
+        b.pos[0] += nx * push; b.pos[2] += nz * push;
+      }
+    }
+
+    // ---- 2) 4m 内超过 4 只 → 多出来的互相攻击
+    // 用简单的贪心簇划分：以每只未归属的绿影为种子，收集它 4m 内的同伴。
+    const claimed = this._stalkerClaimed || (this._stalkerClaimed = new Set());
+    claimed.clear();
+    for (let i = 0; i < pack.length; i++) {
+      const seed = pack[i];
+      if (claimed.has(seed)) continue;
+      const cluster = [seed];
+      claimed.add(seed);
+      for (let j = 0; j < pack.length; j++) {
+        if (i === j) continue;
+        const o = pack[j];
+        if (claimed.has(o)) continue;
+        const dx = o.pos[0] - seed.pos[0];
+        const dz = o.pos[2] - seed.pos[2];
+        if (dx * dx + dz * dz <= R2) { cluster.push(o); claimed.add(o); }
+      }
+      if (cluster.length <= LIMIT) continue;
+
+      // 超编：让排在前面的 LIMIT 只之外的个体互相残杀。
+      // 每帧只结算一对（用 e.slashT 节流），避免一瞬间整群暴毙、观感突兀。
+      for (let a = LIMIT; a < cluster.length; a++) {
+        const victim = cluster[a];
+        victim.packAttackCd = (victim.packAttackCd || 0) - dt;
+        if (victim.packAttackCd > 0) continue;
+        victim.packAttackCd = 0.45;              // 每 ~0.45s 咬一口，看得见过程
+        // 伤害足以在几次内杀掉同类（绿影自体血量见 ENEMY_TYPES）
+        const dmg = Math.max(8, victim.maxHp * 0.35);
+        this.damage(victim, dmg, false, victim.pos, null, { source: 'stalker-pack' });
+        if (victim.alive) continue;
+        // 击杀同类：击杀者（取簇里第一只，代表"赢家"）状态回满到上限 2 倍
+        this._rewardPackKill(cluster[0]);
+      }
+    }
+  }
+
+  /**
+   * 需求 3：击杀同类后的强化 —— 总状态回满至**原上限的 2 倍**，
+   * 速度 22m/s，横向移动变得夸张。
+   */
+  _rewardPackKill(winner) {
+    if (!winner || !winner.alive) return;
+    const base = ENEMY_TYPES.stalker;
+    // 上限翻倍（只做一次，避免反复翻倍滚雪球）
+    if (!winner.packBoosted) {
+      winner.packBoosted = true;
+      winner.maxHp = base.hp * 2;
+      winner.maxShield = base.shield * 2;
+      winner.speed = 22;                         // 需求：22 m/s
+      winner.weaveAmp = 0.95;                    // 需求：夸张的横向移动
+    }
+    // 回满。注意敌人用的是 hp/maxHp（不是 player 那套 health），
+    // 早先这里多写了一行 winner.health 是无效字段。
+    winner.hp = winner.maxHp;
+    winner.shield = winner.maxShield;
+    if (this.particles && typeof this.particles.emit === 'function') {
+      this.particles.emit('ring', {
+        pos: [winner.pos[0], winner.pos[1] + 1, winner.pos[2]],
+        count: 1, color: [0.2, 1, 0.35], size: 0.6, sizeEnd: 3.6, life: 0.5, speed: 0,
+        normal: [0, 1, 0],
+      });
+    }
   }
 
   _updateStatus(e, dt) {

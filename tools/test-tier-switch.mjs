@@ -27,7 +27,7 @@ await new Promise((r) => server.listen(PORT, '127.0.0.1', r));
 const ud = join(tmpdir(), 'ironfall-tier-' + Date.now());
 await mkdir(ud, { recursive: true });
 const proc = spawn(requireChrome('tier-check'), headlessArgs(ud, [
-  '--window-size=1280,720', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', 'about:blank',
+  '--window-size=1280,720',  'about:blank',
 ]), { stdio: ['ignore', 'pipe', 'pipe'] });
 const pf = join(ud, 'DevToolsActivePort');
 let dport = 0;
@@ -74,6 +74,9 @@ const setup = await ev(`(() => {
   const A = window.__IRONFALL__;
   const g = A.game;
   A.setAutomationMode(true);
+  // 测试不需要高帧率：无头是 SwiftShader 软件渲染，不限帧会把 CPU 吃满。
+  // 压到 30fps 足够推进物理与断言（用户反馈过测试占满 CPU）。
+  try { window.__IRONFALL__.game.settings.fpsCap = 30; window.__IRONFALL__.game.applySettings(); } catch (_e) {}
   g.tier = 2; g.mapIndex = 1;
   A.startRun();
   g.hud.hideMenu(); g.paused = false; g.menuKind = null; g.setPlaying(true);
