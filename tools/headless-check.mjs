@@ -17,7 +17,7 @@ import { existsSync } from 'node:fs';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
-import { requireChromeOrNull } from './lib/chrome.mjs';
+import { requireChromeOrNull, killChrome } from './lib/chrome.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const OUT_DIR = resolve(ROOT, 'docs/verify');
@@ -1461,7 +1461,7 @@ async function main() {
   } finally {
     try { if (cdp) cdp.ws.close(); } catch (_e) { /* 忽略 */ }
     if (!KEEP) {
-      try { proc.kill(); } catch (_e) { /* 忽略 */ }
+      killChrome(proc);
     }
     server.close();
     // 写一份机器可读的结果

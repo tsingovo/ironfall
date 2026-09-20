@@ -13,7 +13,7 @@ import { openSync, closeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { requireChrome, headlessArgs } from './lib/chrome.mjs';
+import { requireChrome, headlessArgs, killChrome } from './lib/chrome.mjs';
 import { createLanServer } from './lan-server.mjs';
 
 const HERE = resolve(fileURLToPath(new URL('.', import.meta.url)));
@@ -185,7 +185,7 @@ class Client {
 
   kill() {
     try { if (this.ws) this.ws.close(); } catch (_e) { /* 忽略 */ }
-    try { if (this.proc) this.proc.kill(); } catch (_e) { /* 忽略 */ }
+    if (this.proc) killChrome(this.proc);
   }
 }
 
@@ -775,8 +775,8 @@ try {
 } catch (err) {
   check('端到端流程整体执行', false, err && err.message ? err.message : String(err));
 } finally {
-  host.kill();
-  guest.kill();
+  killChrome(host);
+  killChrome(guest);
   await server.close();
   await publicServer.close();
   if (!KEEP) {

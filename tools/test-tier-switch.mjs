@@ -8,7 +8,7 @@ import { readFile, stat, mkdir } from 'node:fs/promises';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
-import { requireChrome, headlessArgs } from './lib/chrome.mjs';
+import { requireChrome, headlessArgs, killChrome } from './lib/chrome.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const PORT = 8352;
@@ -61,7 +61,7 @@ for (let i = 0; i < 150; i++) {
   if (await ev('window.__IRONFALL__ ? !!window.__IRONFALL__.ready : false') === true) { ready = true; break; }
 }
 console.log('页面 ready:', ready ? '✅' : '❌');
-if (!ready) { console.log('错误:', errors.slice(0, 3)); ws.close(); proc.kill(); server.close(); process.exit(1); }
+if (!ready) { console.log('错误:', errors.slice(0, 3)); ws.close(); killChrome(proc); server.close(); process.exit(1); }
 
 let pass = 0, fail = 0;
 const check = (name, ok, detail) => { if (ok) pass++; else fail++; console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '  [' + detail + ']' : ''}`); };
@@ -152,5 +152,5 @@ check('十关全部可选（新存档也是如此）', unlock && unlock.bad.leng
 
 console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
 if (errors.length) { console.log('运行时错误:'); errors.slice(0, 3).forEach((e) => console.log('  !', String(e).split('\n')[0].slice(0, 140))); }
-ws.close(); proc.kill(); server.close();
+ws.close(); killChrome(proc); server.close();
 process.exitCode = fail > 0 ? 1 : 0;

@@ -6,6 +6,7 @@
 
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 /** 返回可用的浏览器可执行文件路径；找不到返回 null */
 export function findChrome() {
@@ -74,4 +75,29 @@ export function headlessArgs(userDataDir, extra) {
   ];
 }
 
-export default { findChrome, requireChrome, headlessArgs };
+/**
+ * 结束一个无头 Chrome 进程**及其整棵子进程树**。
+ *
+ * 为什么不能只用 `proc.kill()`：Chrome 是多进程架构（主进程 + GPU + renderer +
+ * utility…），而 Windows 上 `proc.kill()` 只终止直接子进程，其余子进程会变成
+ * 孤儿继续驻留 —— 每个还占着 100~200MB 内存。实测连续跑几个测试后会积累到
+ * 十几个 Chrome 进程、上 GB 内存，在任务管理器里非常显眼。
+ *
+ * Windows 用 taskkill /T /F 连整棵树一起结束；其它平台进程组语义正常，
+ * 直接用 SIGKILL 即可。
+ */
+export function killChrome(proc) {
+  if (!proc || proc.exitCode !== null || proc.killed) return;
+  try {
+    if (process.platform === 'win32') {
+      spawnSync('taskkill', ['/PID', String(proc.pid), '/T', '/F'], { stdio: 'ignore' });
+    } else {
+      proc.kill('SIGKILL');
+    }
+  } catch (_e) {
+    // 兜底：至少把直接子进程杀掉
+    try { proc.kill(); } catch (_e2) { /* 忽略 */ }
+  }
+}
+
+export default { findChrome, requireChrome, headlessArgs, killChrome };

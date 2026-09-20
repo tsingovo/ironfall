@@ -5,7 +5,7 @@ import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { tmpdir } from 'node:os';
-import { requireChrome, headlessArgs } from './lib/chrome.mjs';
+import { requireChrome, headlessArgs, killChrome } from './lib/chrome.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const OUT = join(ROOT, 'docs/verify/standalone');
@@ -150,5 +150,5 @@ if (ready) {
 }
 
 console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-ws.close(); proc.kill();
+ws.close(); killChrome(proc);
 process.exit(fail > 0 ? 1 : 0);

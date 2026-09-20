@@ -15,7 +15,7 @@ import { readFile, stat, mkdir, writeFile } from 'node:fs/promises';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
-import { requireChrome, headlessArgs } from './lib/chrome.mjs';
+import { requireChrome, headlessArgs, killChrome } from './lib/chrome.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const OUT = resolve(ROOT, 'docs/verify/ui');
@@ -725,5 +725,5 @@ console.log('  升级面板截图:', await shot('V6-upgrade.png'));
 
 console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
 console.log(`截图目录: ${OUT}`);
-ws.close(); proc.kill(); server.close();
+ws.close(); killChrome(proc); server.close();
 process.exit(fail > 0 ? 1 : 0);

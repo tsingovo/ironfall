@@ -5,7 +5,7 @@ import { readFile, stat, mkdir } from 'node:fs/promises';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
-import { requireChrome, headlessArgs } from './lib/chrome.mjs';
+import { requireChrome, headlessArgs, killChrome } from './lib/chrome.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const PORT = 8351;
@@ -82,5 +82,5 @@ if (ready) {
   console.log('跑一局:', JSON.stringify(run));
 }
 console.log('\n结论:', (ready && errors.length === 0) ? '✅ 启动正常，无运行时错误' : '❌ 仍有问题');
-ws.close(); proc.kill(); server.close();
+ws.close(); killChrome(proc); server.close();
 process.exit(0);
