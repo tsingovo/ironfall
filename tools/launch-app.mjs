@@ -1,7 +1,7 @@
 // IRONFALL 独立窗口启动器：本地静态服务器 + Chromium app 模式。
 import { spawn } from 'node:child_process';
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
@@ -9,6 +9,27 @@ import http from 'node:http';
 const here = dirname(fileURLToPath(import.meta.url));
 const root = dirname(here);
 const logFile = join(root, 'launch.log');
+
+/**
+ * 当前构建的版本标记 —— 从源码里读，**不要在启动器里硬编码**。
+ *
+ * 这里踩过一次真实的坑：早先把 `IRONFALL // BUILD 2.1.6` 直接写死在探测逻辑里，
+ * 版本升到 2.1.7 后字符串永不匹配 → 启动器把自己刚起的服务也当成「旧版」→
+ * 一路往后找空闲端口 → 撞到真正被占用的端口 → 直接以退出码 1 失败。
+ * 现在统一从 src/core/config.js 的 BUILD_VERSION 派生，升版本只改那一处。
+ */
+function currentBuildTag() {
+  try {
+    const src = readFileSync(join(root, 'src', 'core', 'config.js'), 'utf8');
+    const m = /BUILD_VERSION\s*=\s*['"]([^'"]+)['"]/.exec(src);
+    if (m) return `IRONFALL // BUILD ${m[1]}`;
+  } catch (_e) { /* 发布包可能没有 src/，退回按标签识别 */ }
+  // 发布包（单文件）里没有 src/：只要能确认是 IRONFALL 且带 BUILD 标记就认。
+  return null;
+}
+
+const BUILD_TAG = currentBuildTag();
+
 // 2.0 使用独立端口，绝不能复用 1.x 在 18080 上残留的单文件服务器。
 // 旧服务器返回同样的 <title>，此前仅按标题探测会让新版启动器打开旧游戏。
 let port = Number(process.env.IRONFALL_PORT || 18240);
@@ -121,11 +142,23 @@ async function probeServer(candidatePort = port) {
   const rootPage = await getText(`${base}/?standalone=1`);
   if (!rootPage.reachable) return { reachable: false, ironfall: false, currentBuild: false };
   const ironfall = rootPage.status === 200 && rootPage.text.includes('<title>IRONFALL');
-  let currentBuild = ironfall && rootPage.text.includes('IRONFALL // BUILD 2.1.6');
-  // 开发目录的 index.html 不内联 HUD，因此再检查源码；发布包的单文件在上一步即可识别。
-  if (ironfall && !currentBuild) {
-    const hudSource = await getText(`${base}/src/ui/hud.js`);
-    currentBuild = hudSource.status === 200 && hudSource.text.includes('IRONFALL // BUILD 2.1.6');
+  // 判定"是不是当前构建"：
+  //  · 开发目录：拿源码里的 BUILD_VERSION 拼出精确标记比对
+  //  · 发布包：里面没有 src/，退化为"只要带 IRONFALL 的 BUILD 标记就算自己人"
+  // 关键是**不要**把版本号写死在这里（见 currentBuildTag 的注释）。
+  const hasBuildTag = /IRONFALL \/\/ BUILD \d+\.\d+/.test(rootPage.text);
+  let currentBuild = false;
+  if (ironfall) {
+    if (BUILD_TAG) {
+      currentBuild = rootPage.text.includes(BUILD_TAG);
+      if (!currentBuild) {
+        // 开发目录的 index.html 不内联 HUD，因此再检查源码
+        const hudSource = await getText(`${base}/src/ui/hud.js`);
+        currentBuild = hudSource.status === 200 && hudSource.text.includes(BUILD_TAG);
+      }
+    } else {
+      currentBuild = hasBuildTag;
+    }
   }
   return { reachable: true, ironfall, currentBuild };
 }

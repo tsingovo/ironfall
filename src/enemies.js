@@ -1558,16 +1558,16 @@ export class EnemySystem {
     if (!o.noImpactAudio) {
       const impactPos = hitPoint || e.pos;
       if (res.shieldHit) {
-        Events.emit('audio:play', { name: 'hit_armor', pos: impactPos, gain: 0.86 });
+        Events.emit('audio:play', { name: 'hit_armor', pos: impactPos, gain: 1.72 });  // 需求10：命中音效响度 x2
       }
       if (res.shieldBreak) {
         // 破盾音放在护盾命中音之后、肉体命中音之前，听感上明确表现为
         // “金属受击 → 清脆碎裂 → 肉体受击”的顺序。
-        Events.emit('audio:play', { name: 'shield_break', pos: impactPos, gain: 0.72 });
+        Events.emit('audio:play', { name: 'shield_break', pos: impactPos, gain: 1.44 });  // 需求10：命中音效响度 x2
       }
       if (res.healthDamage > 0) {
         Events.emit('audio:play', {
-          name: headshot ? 'hit_head' : 'hit_flesh', pos: impactPos, gain: 0.8,
+          name: headshot ? 'hit_head' : 'hit_flesh', pos: impactPos, gain: 1.6,   // 需求10：命中音效响度 x2
         });
       }
     }

@@ -450,7 +450,7 @@ export const WEAPONS = {
     // 冲锋枪仍然偏近战，但 42m 前不衰减、150m 后仍保留 85%，不会出现
     // “敌人明明看得见却像射出射程外”的违和感。
     rangeFar: 300, damageFalloffStart: 42, damageFalloffEnd: 150, falloffMinMul: 0.85,
-    magSize: 24, reserveMax: Infinity, reloadTime: 0.60, reloadEmptyTime: 0.60,
+    magSize: 30, reserveMax: Infinity, reloadTime: 0.60, reloadEmptyTime: 0.60,
     adsTime: 0.13, adsSpreadMul: 0.40, adsMoveMul: 0.50, adsFovMul: 0.86,
     hipSpreadBase: 0.62,
     spreadPerShot: 0.155,

@@ -1,6 +1,7 @@
 // 验证 2.x 启动器不会复用占据默认端口的旧版 IRONFALL。
 import http from 'node:http';
 import { spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -53,6 +54,14 @@ function runLauncher(port) {
   });
 }
 
+// 版本标记从源码读取，**不要在这里硬编码** ——
+// 启动器的探测逻辑以 src/core/config.js 的 BUILD_VERSION 为准，
+// 测试若写死旧版本号，升版本后会连带失效（2.1.6 → 2.1.7 时踩过）。
+const configSrc = readFileSync(join(root, 'src', 'core', 'config.js'), 'utf8');
+const versionMatch = /BUILD_VERSION\s*=\s*['"]([^'"]+)['"]/.exec(configSrc);
+if (!versionMatch) throw new Error('无法从 src/core/config.js 读取 BUILD_VERSION');
+const CURRENT_BUILD = `IRONFALL // BUILD ${versionMatch[1]}`;
+
 const base = await findPair();
 const oldServer = http.createServer((_req, res) => {
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
@@ -60,7 +69,7 @@ const oldServer = http.createServer((_req, res) => {
 });
 const currentServer = http.createServer((_req, res) => {
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-  res.end('<!doctype html><title>IRONFALL</title><div>IRONFALL // BUILD 2.1.6</div>');
+  res.end(`<!doctype html><title>IRONFALL</title><div>${CURRENT_BUILD}</div>`);
 });
 
 try {

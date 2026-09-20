@@ -4,6 +4,19 @@
 
 import { toRad } from './math.js';
 
+/**
+ * 版本号 —— **全项目唯一来源**。
+ *
+ * 为什么要集中：启动器要在复用端口前确认"那个端口上跑的是不是当前构建的 IRONFALL"，
+ * 判据就是页面里有没有这个字符串。早先它把版本号硬编码在 tools/launch-app.mjs 里，
+ * 结果每次升版本号都会静默失配（2.1.6 → 2.1.7 时直接导致"端口被占用"启动失败）。
+ * 现在 HUD 标记由这里派生，启动器改为读源码里的这一行，升版本只需改这一处。
+ */
+export const BUILD_VERSION = '2.1.7';
+
+/** HUD 标题栏展示的构建标记（与 BUILD_VERSION 同源，不要另写一份） */
+export const BUILD_TAG = `IRONFALL // BUILD ${BUILD_VERSION}`;
+
 const DEFAULTS = {
   // ------------------------------------------------------------ 渲染
   render: {
@@ -156,8 +169,11 @@ const DEFAULTS = {
     // 抓钩
     grappleRange: 42,
     grappleSpeed: 34,
-    grappleAccel: 92,          // 弹簧加速度
-    grapplePull: 22,
+    // 需求 6：初始钩爪力度提高到 2 倍（弹簧加速度 92 → 184）。
+    // 只加倍"拉拽力度"这一项：射程、摆荡保留率、断钩规则都保持原值，
+    // 否则会连带把抓钩变成位移过强的技能。
+    grappleAccel: 184,         // 弹簧加速度（原 92）
+    grapplePull: 44,           // 牵引力同步加倍（原 22）
     grappleMinDist: 2.0,           // 距离锚点 2m 内自动断钩
     grappleBreakAngleDeg: 58,      // 视线偏离锚点超过此角度后开始计时
     grappleBreakAimTime: 1.0,      // 持续偏离超过 1 秒自动断钩
@@ -212,8 +228,10 @@ const DEFAULTS = {
 
   // ------------------------------------------------------------ 玩家资源
   gameplay: {
-    maxHealth: 100,
-    maxShield: 75,
+    // 需求 4：玩家初始血量与护盾提高至 1.5 倍（原 100 / 75 → 150 / 112.5）
+    // 护盾取整到 113 以保留 .5 的收益（HUD 显示为整数）。
+    maxHealth: 150,
+    maxShield: 113,
     shieldRegenDelay: 3.6,
     // 脱战后每秒恢复最大护盾的 10%（再乘升级倍率）。保留旧字段作为
     // 第三方/旧存档的兼容回退，实际默认值由 shieldRegenPercent 驱动。
