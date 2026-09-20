@@ -56,6 +56,18 @@ export class ProjectilePool {
     this.tcg = new Float32Array(this.tracerCapacity);
     this.tcb = new Float32Array(this.tracerCapacity);
 
+    // ---- 持续瞄准光束（需求 2：狙击手瞄准时那条红色射线）----
+    //
+    // 为什么不复用曳光池：
+    //   · 曳光池是环形缓冲（128 条），连续多帧补一条会把别人的弹道顶掉
+    //   · 曳光 life 有 0.13 秒下限，做不出"一直挂着直到开枪"的持续感
+    // 这里用"按持有者 id 每帧刷新"的语义：谁调用 setAimBeam 谁就负责每帧续期，
+    // 到点没续期的光束自动消失（见 update 里的 beamStale 处理），
+    // 因此敌人死亡/丢失目标时不会留下挂在空中的红线。
+    this.beams = new Map();          // key -> { ax..bz, width, r,g,b, alive }
+    this._beamFrame = 0;
+    this._beamSeen = new Set();
+
     // 枪口火光
     this.flashTime = 0;
     this.flashScale = 1;
@@ -118,6 +130,53 @@ export class ProjectilePool {
    *   · 若没给 b：沿 dir 画 `fallbackLen`
    * 另外宽度用 `widthScale` 放大（渲染层再乘光晕倍率）。
    */
+  /**
+   * 持续瞄准光束（需求 2：狙击手瞄准时那条红色射线）。
+   *
+   * 语义：**每帧调用一次来续期**。同一 key 每帧覆盖坐标，于是射线能跟着
+   * "缓慢移动的瞄准"走；某一帧没有续期就被移除，因此狙击手死亡或丢失目标时
+   * 不会留下挂在空中的红线。
+   *
+   * 为什么不复用曳光池：
+   *   · 曳光池是环形缓冲（128 条），连续多帧补一条会把别人的弹道顶掉
+   *   · 曳光 life 有 0.13 秒下限，做不出"一直挂着直到开枪"的持续感
+   *
+   * @param key   持有者标识（例如 `aim:<enemyId>`）
+   * @param from  起点（枪口）
+   * @param to    终点（瞄准点）
+   * @param opts  { width, color:[r,g,b] }
+   */
+  setAimBeam(key, from, to, opts) {
+    if (!CFG.fx.tracers) return;
+    const o = opts || {};
+    let b = this.beams.get(key);
+    if (!b) {
+      b = { ax: 0, ay: 0, az: 0, bx: 0, by: 0, bz: 0, width: 0.05, r: 1, g: 0.15, b: 0.1 };
+      this.beams.set(key, b);
+    }
+    b.ax = from[0]; b.ay = from[1]; b.az = from[2];
+    b.bx = to[0]; b.by = to[1]; b.bz = to[2];
+    b.width = Math.max(0.01, o.width == null ? 0.05 : o.width);
+    const c = o.color || [1, 0.15, 0.1];
+    b.r = c[0]; b.g = c[1]; b.b = c[2];
+    this._beamSeen.add(key);
+  }
+
+  /** 立刻撤掉某条瞄准光束（狙击手开枪或死亡时用，避免红线残留） */
+  clearAimBeam(key) {
+    this.beams.delete(key);
+    this._beamSeen.delete(key);
+  }
+
+  /** 每帧收尾：本帧没有被续期的光束全部移除 */
+  _expireBeams() {
+    if (this.beams.size === 0) { this._beamSeen.clear(); return; }
+    for (const key of this.beams.keys()) {
+      if (!this._beamSeen.has(key)) this.beams.delete(key);
+    }
+    this._beamSeen.clear();
+  }
+
   spawnTracer(a, b, opts) {
     if (!CFG.fx.tracers) return;
     if (this.tracerCount >= this.tracerCapacity) {
@@ -206,6 +265,10 @@ export class ProjectilePool {
       w++;
     }
     this.tracerCount = w;
+
+    // 瞄准光束：本帧没被续期的移除（需求 2）。
+    // 这样狙击手死亡/丢失目标时红线会自动消失，不需要敌人侧显式清理。
+    this._expireBeams();
 
     // 枪口火光
     if (this.flashTime > 0) this.flashTime -= dt;
@@ -302,6 +365,31 @@ export class ProjectilePool {
             Math.min(1, this.tcr[i] + 0.55) * fade,
             Math.min(1, this.tcg[i] + 0.55) * fade,
             Math.min(1, this.tcb[i] + 0.55) * fade)) n++;
+        }
+        if (n > 0) e.drawInstanced(mesh, this._mats.subarray(0, n * 16), n, {
+          colors: this._cols.subarray(0, n * 4), unlit: true, cull: false, depthWrite: false,
+        });
+      }
+    }
+
+    // ---- 持续瞄准光束（需求 2：狙击手那条红色射线）----
+    // 用和曳光相同的三段式画法，但**不衰减**：只要敌人还在瞄准就一直亮着，
+    // 让玩家有稳定的"我被瞄上了"读数。略粗，因为它是威胁提示而不是弹道。
+    if (this.beams.size > 0) {
+      const mesh = e.userTracerMesh;
+      if (mesh) {
+        let n = 0;
+        for (const b of this.beams.values()) {
+          const w = b.width * TRACER_WIDTH_SCALE;
+          // 外层红色光晕（需求："极其明显的红光"）
+          if (this._writeStretch(n, b.ax, b.ay, b.az, b.bx, b.by, b.bz,
+            w * 5.2, w * 5.2, b.r, b.g * 0.5, b.b * 0.5)) n++;
+          // 中层实色
+          if (this._writeStretch(n, b.ax, b.ay, b.az, b.bx, b.by, b.bz,
+            w * 2.4, w * 2.4, b.r, b.g, b.b)) n++;
+          // 内层白芯，保证在亮环境里也读得出来
+          if (this._writeStretch(n, b.ax, b.ay, b.az, b.bx, b.by, b.bz,
+            w * 0.9, w * 0.9, Math.min(1, b.r + 0.4), Math.min(1, b.g + 0.4), Math.min(1, b.b + 0.4))) n++;
         }
         if (n > 0) e.drawInstanced(mesh, this._mats.subarray(0, n * 16), n, {
           colors: this._cols.subarray(0, n * 4), unlit: true, cull: false, depthWrite: false,

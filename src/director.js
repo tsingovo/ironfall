@@ -369,12 +369,66 @@ export class Director {
    * @param minD 最小距离   @param maxD 最大距离
    * @param frontBias 0..1，1 = 只在前方半球，0 = 全向
    */
+  /**
+   * 兵种的高台偏好（需求 2：高处狙击手）。
+   * 返回 null 表示该兵种不挑高度；返回 { min } 表示必须比玩家高至少 min 米。
+   * 结果按 typeId 缓存 —— 刷怪是热路径，别每次刷怪都去查表 + 构造对象。
+   */
+  _highGroundPref(typeId) {
+    if (!this._highPrefCache) this._highPrefCache = new Map();
+    if (this._highPrefCache.has(typeId)) return this._highPrefCache.get(typeId);
+    const def = ENEMY_TYPES[typeId];
+    const pref = def && def.prefersHighGround
+      ? { min: Number.isFinite(def.highGroundMin) ? def.highGroundMin : 6 }
+      : null;
+    this._highPrefCache.set(typeId, pref);
+    return pref;
+  }
+
+  /** 该兵种这次刷怪是否必须占高台（高台点不够时允许放宽，避免刷不出怪） */
+  _typePrefersHighGround(typeId, pref) {
+    return !!pref;
+  }
+
   _samplePointInRing(minD, maxD, frontBias, typeId) {
+    const highPref = this._highGroundPref(typeId);
+    const out = this._spawnScratch;
+
+    // 高台兵种（需求 2）：先严格只在高台里找；找不到再放宽到任意高度。
+    // 放宽这一轮是必须的 —— 地图没有高台、或高台都落在刷怪环之外时，
+    // 严格过滤会让该兵种**完全刷不出来**，属于静默失效，比偶尔刷在地面糟糕得多。
+    if (highPref) {
+      const strict = this._sampleRingPass(minD, maxD, frontBias, typeId, highPref, false)
+        || this._sampleRingPass(minD, maxD, frontBias, typeId, highPref, true);
+      if (!strict) return null;
+      out[0] = strict[0]; out[1] = strict[1]; out[2] = strict[2];
+      this.world.snapToGround(out, 0.15);
+      return out;
+    }
+
+    const got = this._sampleRingPass(minD, maxD, frontBias, typeId, null, false);
+    if (!got) return null;
+    out[0] = got[0]; out[1] = got[1]; out[2] = got[2];
+    this.world.snapToGround(out, 0.15);
+    return out;
+  }
+
+  /**
+   * 环形采样的一轮：在 [minD,maxD] 环内挑一个可站导航点。
+   * 抽成独立函数是为了让高台兵种能"严格一轮 + 放宽一轮"复用同一套评分逻辑。
+   *
+   * 返回候选点本身（不是共享 scratch），由调用方拷进 out —— 两轮连调时
+   * 如果都写同一块 scratch，第一轮的结果会被第二轮覆盖。
+   */
+  _sampleRingPass(minD, maxD, frontBias, typeId, highPref, relaxHigh) {
     const p = this.player;
     const w = this.world;
     const cands = w.navCandidates();
     if (!cands.length) return null;
-    const out = this._spawnScratch;
+
+    // 高台过滤必须在**找最近候选点这一步**生效：
+    // 否则"最近的导航点"永远先被地面点抢走，之后再按高度剔除就恒为 0。
+    const needHigh = (highPref && !relaxHigh) ? (highPref.min + p.pos[1]) : -Infinity;
     let best = null;
     let bestScore = Infinity;
 
@@ -391,34 +445,40 @@ export class Director {
       const tx = p.pos[0] - Math.sin(ang) * dist;
       const tz = p.pos[2] - Math.cos(ang) * dist;
 
-      // 找离目标点最近的可站点
       let nearest = null;
       let nd = Infinity;
       for (let i = 0; i < cands.length; i += 3) {
         const c = cands[i];
+        if (c[1] < needHigh) continue;                 // 不够高，不参与
         const d2 = (c[0] - tx) * (c[0] - tx) + (c[2] - tz) * (c[2] - tz);
         if (d2 < nd) { nd = d2; nearest = c; }
       }
       if (!nearest) continue;
+
       nd = Math.sqrt(nd);
       const actual = Math.hypot(nearest[0] - p.pos[0], nearest[2] - p.pos[2]);
       if (actual < minD || actual > maxD * 1.35) continue;
       if (this._tooCloseToEnemy(nearest, 2.0)) continue;
       if (!this._isSafeSpawnPoint(typeId, nearest, minD)) continue;
-      // 离目标点越近越好；距离接近目标距离的加分
+
+      // 越高越优先（负分 = 更好）。放宽轮不加这个偏好，免得又偏向高台导致
+      // 在"高台够不着"的图上白跑一轮。
+      let highBonus = 0;
+      if (highPref && !relaxHigh) {
+        highBonus = -Math.min(60, Math.max(0, nearest[1] - p.pos[1]) * 2.2);
+      }
+      // 离目标点越近越好；距离接近目标距离的加分。
       // 可见位置不是绝对禁用（开放地图仍需刷怪），但会被明显降权。
       const score = nd + Math.abs(actual - dist) * 0.5
-        + (this._visibleFromPlayer(nearest, typeId) ? 24 : 0);
+        + (this._visibleFromPlayer(nearest, typeId) ? 24 : 0) + highBonus;
       if (score < bestScore) {
         bestScore = score;
         best = nearest;
       }
     }
 
-    if (!best) return null;
-    out[0] = best[0]; out[1] = best[1]; out[2] = best[2];
-    w.snapToGround(out, 0.15);
-    return out;
+    // 返回副本：cands 是 world 的共享数组，直接返回引用会被后续改动污染
+    return best ? [best[0], best[1], best[2]] : null;
   }
 
   /**

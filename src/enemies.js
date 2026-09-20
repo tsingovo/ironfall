@@ -102,6 +102,39 @@ export const ENEMY_TYPES = {
     meshKind: 'humanoid',
     attackRange: 140, preferredRange: 55, strafe: false, keepDistance: true,
   },
+  // 需求 2：可能在高处生成的狙击手。
+  //   黑色人体模型；瞄准时冒出极其明显的红光，并发出红色射线**缓慢**瞄向玩家；
+  //   确定射击后不再移动镜头，0.5 秒后开枪；伤害 100。
+  // 与普通 sniper 的区别：普通狙击手是"绿色 + 34 伤 + 会走位"的常规远程单位，
+  // 这个是"黑色 + 100 伤 + 站桩"的高台威胁，靠红色射线给玩家反应窗口。
+  highSniper: {
+    id: 'highSniper', name: '高处狙击手', nameCN: '高台射手',
+    hp: 75, shield: 57, speed: 2.2, accel: 12,
+    radius: 0.4, height: 1.8,
+    // 黑色人体模型（需求原文）
+    color: [0.045, 0.045, 0.055], accentColor: [1.0, 0.10, 0.06],
+    score: 260, alloy: 8,
+    weapon: {
+      damage: 100, rpm: 30, range: 80, accuracy: 0.98,
+      burst: 1, burstPause: 3.2, projectileSpeed: 0, spreadDeg: 0.45,
+      // 总蓄力 1.6s：前 1.1s 红线缓慢扫向玩家，后 0.5s 冻结（需求"0.5 秒后射击"）
+      telegraph: 1.6, laser: true,
+      aimTurnRate: 0.85,        // 弧度/秒，缓慢
+      aimStartMissDeg: 34,      // 起始故意偏开，让玩家看到红线扫过来
+      aimLockTime: 0.5,         // 最后 0.5 秒冻结瞄向
+      aimRange: 180,
+    },
+    behavior: 'sniper',
+    xp: 3, threat: 2.8,
+    meshKind: 'humanoid',
+    // 注意射程/交战距离要控制在地图尺度内：内置地图 size=200（半宽 100），
+    // 而导演的刷怪环大致按 attackRange/preferredRange 推算。
+    // 早先这里写 170/90，刷怪环被推到 182–220m —— 完全落在地图之外，
+    // 表现为"高处狙击手永远刷不出来"。现在压到 70/45，环落在 60–110m 内。
+    attackRange: 70, preferredRange: 45, strafe: false, keepDistance: true,
+    // 刷怪高度偏好（供 director 选点用）：优先高台
+    prefersHighGround: true, highGroundMin: 6,
+  },
   swarm: {
     id: 'swarm', name: '虫群', nameCN: '拆解虫群',
     hp: 75, shield: 57, speed: 8.0, accel: 38,
@@ -1048,9 +1081,28 @@ export class EnemySystem {
 
     if (e.telegraphing) {
       e.telegraph -= dt;
+      // 需求 2：高处狙击手在确定射击后「不再移动镜头」——
+      // 也就是蓄力后半段把瞄向冻结，不再追着玩家转。
+      // 用 aimLockT 表示锁定时机：telegraph 是总蓄力时长，后 0.5 秒为冻结段。
+      if (e.aimDir && e.aimLockT > 0) {
+        e.aimLockT -= dt;
+        if (e.aimLockT <= 0) {
+          e.aimLocked = true;
+          e.aimLockT = 0;
+        }
+      }
+      // 未锁定时，把瞄向**缓慢**转向玩家（需求："缓慢瞄向玩家"）。
+      // 用固定角速度而不是插值，视觉上才像"激光扫过去"。
+      if (e.aimDir && !e.aimLocked && w.aimTurnRate) {
+        this._turnAimToward(e, player, w.aimTurnRate * dt);
+      }
       if (e.telegraph <= 0) {
         e.telegraphing = false;
+        this._clearAimBeam(e);
         this._shoot(e, player, dist);
+      } else {
+        // 蓄力期间维持瞄准射线
+        this._updateAimBeam(e, player, w);
       }
       return;
     }
@@ -1083,6 +1135,87 @@ export class EnemySystem {
       e.sniperAim = w.laser;
       e.burstLeft = w.burst;
       e.burstCooldown = 0;
+      // 需求 2：高处狙击手在蓄力开始时建立"瞄向"，之后靠 _turnAimToward 缓慢
+      // 转向玩家；锁定段（最后 aimLockTime 秒）冻结，实现"确定射击后不再移动镜头"。
+      if (w.aimTurnRate) {
+        if (!e.aimDir) e.aimDir = new Float32Array(3);
+        // 初始瞄向：从枪口指向玩家当前位置（首帧对齐，之后才开始缓慢修正）
+        const a = e.aimDir;
+        const my = e.pos[1] + e.height * 0.72;
+        a[0] = player.pos[0] - e.pos[0];
+        a[1] = (player.pos[1] + player.currentHeight * 0.5) - my;
+        a[2] = player.pos[2] - e.pos[2];
+        const L = Math.hypot(a[0], a[1], a[2]) || 1;
+        a[0] /= L; a[1] /= L; a[2] /= L;
+        // 故意先偏开一个角度，让玩家看到红线"扫过来"而不是一开始就贴脸
+        const off = (w.aimStartMissDeg || 0) * Math.PI / 180;
+        if (off > 0) {
+          const c = Math.cos(off), s = Math.sin(off);
+          const nx = a[0] * c - a[2] * s;
+          const nz = a[0] * s + a[2] * c;
+          a[0] = nx; a[2] = nz;
+          const L2 = Math.hypot(a[0], a[1], a[2]) || 1;
+          a[0] /= L2; a[1] /= L2; a[2] /= L2;
+        }
+        e.aimLocked = false;
+        e.aimLockT = Number.isFinite(w.aimLockTime) ? w.aimLockTime : 0.5;
+      } else {
+        e.aimDir = null;
+        e.aimLocked = false;
+      }
+    }
+  }
+
+  /** 把 e.aimDir 以固定角速度朝玩家方向旋转（需求 2 的"缓慢瞄向"） */
+  _turnAimToward(e, player, maxRad) {
+    const a = e.aimDir;
+    if (!a) return;
+    const my = e.pos[1] + e.height * 0.72;
+    const tx = player.pos[0] - e.pos[0];
+    const ty = (player.pos[1] + player.currentHeight * 0.5) - my;
+    const tz = player.pos[2] - e.pos[2];
+    const L = Math.hypot(tx, ty, tz) || 1;
+    const dx = tx / L, dy = ty / L, dz = tz / L;
+    // 当前瞄向与目标方向的夹角
+    const dot = M.clamp(a[0] * dx + a[1] * dy + a[2] * dz, -1, 1);
+    const ang = Math.acos(dot);
+    if (ang <= 1e-4) return;
+    const t = Math.min(1, maxRad / ang);       // 本帧最多转 maxRad 弧度
+    let nx = a[0] + (dx - a[0]) * t;
+    let ny = a[1] + (dy - a[1]) * t;
+    let nz = a[2] + (dz - a[2]) * t;
+    const L2 = Math.hypot(nx, ny, nz) || 1;
+    a[0] = nx / L2; a[1] = ny / L2; a[2] = nz / L2;
+  }
+
+  /** 蓄力期间维护瞄准射线（需求 2：红色射线 + 极其明显的红光） */
+  _updateAimBeam(e, player, w) {
+    if (!this.projectiles || !e.aimDir) return;
+    const key = 'aim:' + e.id;
+    const from = T_B;
+    from[0] = e.pos[0];
+    from[1] = e.pos[1] + e.height * 0.72;
+    from[2] = e.pos[2];
+    // 终点：沿瞄向前方 rayRange，或碰到世界几何就停在命中点
+    const range = Number.isFinite(w.aimRange) ? w.aimRange : 160;
+    const hit = this.world.raycast(from, e.aimDir, range, {});
+    const to = T_C;
+    const len = hit.hit ? hit.t : range;
+    to[0] = from[0] + e.aimDir[0] * len;
+    to[1] = from[1] + e.aimDir[1] * len;
+    to[2] = from[2] + e.aimDir[2] * len;
+    // 锁定后变亮变粗，给玩家"要开枪了"的读数
+    const locked = !!e.aimLocked;
+    this.projectiles.setAimBeam(key, from, to, {
+      width: locked ? 0.075 : 0.05,
+      color: locked ? [1, 0.10, 0.06] : [0.95, 0.18, 0.10],
+    });
+  }
+
+  _clearAimBeam(e) {
+    if (!this.projectiles || !e.aimDir) return;
+    if (typeof this.projectiles.clearAimBeam === 'function') {
+      this.projectiles.clearAimBeam('aim:' + e.id);
     }
   }
 
@@ -1124,10 +1257,19 @@ export class EnemySystem {
     target[2] += player.vel[2] * lead * 0.12;
 
     const dir = T_D;
-    M.sub3(target, muzzle, dir);
-    const d = M.len3(dir) || 1;
-    M.scale3(dir, 1 / d, dir);
-    M.randomConeDir(dir, spreadRad, this.rng, dir);
+    // 需求 2：带瞄准射线的狙击手必须**按自己的瞄向开火**，而不是每发都瞬间
+    // 对准玩家 —— 否则"锁定后不再移动镜头"就没有意义，玩家也躲不掉。
+    // 瞄向在他蓄力期间缓慢转向，锁定后冻结，所以打偏是玩家主动走位的结果。
+    if (e.aimDir && w.aimTurnRate) {
+      dir[0] = e.aimDir[0]; dir[1] = e.aimDir[1]; dir[2] = e.aimDir[2];
+      // 保留一点精度误差，但不再做"瞬间对准"
+      M.randomConeDir(dir, spreadRad, this.rng, dir);
+    } else {
+      M.sub3(target, muzzle, dir);
+      const d = M.len3(dir) || 1;
+      M.scale3(dir, 1 / d, dir);
+      M.randomConeDir(dir, spreadRad, this.rng, dir);
+    }
 
     e.gunRecoil = 1;
 

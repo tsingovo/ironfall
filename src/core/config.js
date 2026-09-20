@@ -169,11 +169,17 @@ const DEFAULTS = {
     // 抓钩
     grappleRange: 42,
     grappleSpeed: 34,
-    // 需求 6：初始钩爪力度提高到 2 倍（弹簧加速度 92 → 184）。
-    // 只加倍"拉拽力度"这一项：射程、摆荡保留率、断钩规则都保持原值，
-    // 否则会连带把抓钩变成位移过强的技能。
-    grappleAccel: 184,         // 弹簧加速度（原 92）
-    grapplePull: 44,           // 牵引力同步加倍（原 22）
+    // 需求 6：初始钩爪力度提高到 2 倍。
+    //
+    // ⚠ 这里只加倍**加速度**（弹簧刚度），**不能加倍 grapplePull**：
+    //   grapplePull 是"朝锚点的目标径向速度"，而 _updateGrapple 里有一条
+    //   `speed > grappleDetachSpeed(34) → 立即断钩` 的保护。
+    //   早先把 pull 一起改成 44 之后，钩子刚拉起来径向速度就冲到 44，
+    //   瞬间越过 34 的阈值自动脱落 —— 玩家反馈的"钩爪很容易消失"就是这个。
+    //   现在 pull 保持 22（留出到 34 的余量），靠 accel 加倍让钩子"起速更快、
+    //   拉得更果断"，这才是"力度变大"的正确表达。
+    grappleAccel: 184,         // 弹簧加速度（原 92，加倍）
+    grapplePull: 22,           // 目标径向速度保持原值：必须 < grappleDetachSpeed(34)
     grappleMinDist: 2.0,           // 距离锚点 2m 内自动断钩
     grappleBreakAngleDeg: 58,      // 视线偏离锚点超过此角度后开始计时
     grappleBreakAimTime: 1.0,      // 持续偏离超过 1 秒自动断钩

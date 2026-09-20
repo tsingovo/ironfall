@@ -1311,6 +1311,14 @@ export class WeaponSystem {
     st.reloadT = 0;
     st.reloadCueIndex = 0;
     this.vm.reloadStage = 0;
+    // 换弹结束即解除"必须松扳机"的门闩。
+    //
+    // 需求：**一直按住射击，换弹之后应该继续射击**。
+    // 原设计是打空自动换弹后要求先松开左键（_requireTriggerRelease），
+    // 理由是"阻断打空—换弹—再打空的无限循环"；但换弹本身就要 0.6 秒，
+    // 这个节流已经足够，门闩反而让玩家以为"卡住不打了"。
+    // 现在只要还按着，换完就接着打 —— 与直觉一致。
+    this._requireTriggerRelease = false;
     Events.emit('weapon:reload', { def, start: false, duration: 0 });
 
     // Sentinel 按 B 时若弹匣不满，会先自动补满；换弹刚结束立刻进入

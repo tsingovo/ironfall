@@ -77,5 +77,24 @@ check('普通敌人按 55/45 分配牵引', Math.abs(enemy.grapplePull.targetSpe
 player._releaseGrapple();
 check('断钩会清除敌人牵引请求', enemy.grapplePull.pending === false && enemy.grapplePull.source === null);
 
+// ── 参数关系护栏（真实踩过的坑）────────────────────────────────────────
+// _updateGrapple 里有一条 `speed > grappleDetachSpeed → 立即断钩` 的保护。
+// 如果"朝锚点的目标径向速度" grapplePull 被调到接近或超过该阈值，
+// 钩子刚拉起来就会瞬间自动脱落 —— 玩家反馈的"钩爪很容易消失"正是如此
+// （需求 6 要求力度加倍时把 pull 一起改成了 44，而阈值只有 34）。
+// 这条断言锁死这个关系，以后调力度不会再悄悄踩坏。
+{
+  const pull = CFG.move.grapplePull;
+  const detach = CFG.move.grappleDetachSpeed;
+  check('钩爪参数：目标径向速度必须显著低于断钩速度阈值',
+    pull < detach * 0.8,
+    `grapplePull=${pull} < grappleDetachSpeed=${detach} 的 80%（${(detach * 0.8).toFixed(1)}）`);
+  check('钩爪参数：加速度足够（需求 6 的"力度加倍"体现在这里）',
+    CFG.move.grappleAccel >= 180, `grappleAccel=${CFG.move.grappleAccel}`);
+  check('钩爪参数：断钩距离在合理区间',
+    CFG.move.grappleMinDist > 0 && CFG.move.grappleMinDist < CFG.move.grappleRange,
+    `grappleMinDist=${CFG.move.grappleMinDist} < grappleRange=${CFG.move.grappleRange}`);
+}
+
 console.log(`\nGRAPPLE SELF-TEST: ${pass}/${pass + fail} passed`);
 if (fail) process.exitCode = 1;

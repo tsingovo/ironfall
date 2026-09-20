@@ -432,20 +432,32 @@ if (wp) {
     check(`${hit ? '命中' : '未命中'}路径一次更新严格只扣一发`, fireState.ammo === R99_MAG - 1);
   }
 
-  // 自动换弹后持续按住左键不得继续射击；必须松开一次再重新按下。
+  // 换弹期间按住左键不得开火；**换弹结束后若仍按住，应当继续射击**。
+  //
+  // 这里的行为在需求变更中反转过：原设计是"打空自动换弹后必须松开扳机"
+  // （_requireTriggerRelease 门闩，理由是阻断"打空—换弹—再打空"的循环），
+  // 但换弹本身 0.6 秒的节流已经足够，门闩反而让玩家以为"卡住不打了"。
+  // 现在换弹完成即解除门闩。
   fireState.ammo = 0; fireState.reloading = false; fireProbe._fireTimer = 0;
-  fireProbe._requireTriggerRelease = false;
-  fireProbe.update(0, { fire: true });
-  const latched = fireState.reloading && fireProbe._requireTriggerRelease;
+  fireProbe._fire = (state) => { state.ammo--; };
+  fireProbe.update(0, { fire: true });                 // 打空 → 触发自动换弹
+  check('打空后进入换弹并锁住扳机',
+    fireState.reloading === true && fireProbe._requireTriggerRelease === true,
+    `reloading=${fireState.reloading} latch=${fireProbe._requireTriggerRelease}`);
+
+  // 推进换弹到结束（保持按住）。用一个很小的正 dt，让换弹在本帧完成。
   fireState.reloadT = fireState.reloadDuration;
-  fireProbe.update(0, { fire: true });
+  fireProbe.update(1 / 240, { fire: true });
+  check('换弹完成后解除扳机门闩（游戏内表现：按住不放会继续射击）',
+    fireState.reloading === false && fireProbe._requireTriggerRelease === false,
+    `reloading=${fireState.reloading} latch=${fireProbe._requireTriggerRelease}`);
+
   const afterReloadAmmo = fireState.ammo;
+  check('换弹确实补满了弹匣', afterReloadAmmo === R99_MAG, `ammo=${afterReloadAmmo}`);
   fireProbe.update(1, { fire: true });
-  check('打空自动换弹后按住左键不会再次开火',
-    latched && fireState.ammo === afterReloadAmmo && afterReloadAmmo === wp.WEAPONS.r99.magSize);
-  fireProbe.update(0, { fire: false });
-  fireProbe.update(0, { fire: true });
-  check('松开并重新按下左键后恢复正常开火', fireState.ammo === wp.WEAPONS.r99.magSize - 1);
+  check('持续按住左键：换弹结束后自动继续射击',
+    fireState.ammo === afterReloadAmmo - 1,
+    `${afterReloadAmmo} → ${fireState.ammo}`);
 
   // 音频名必须存在
   const audio = mods['src/audio/audio.js'];
