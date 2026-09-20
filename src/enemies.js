@@ -31,7 +31,7 @@ export const ENEMY_TYPES = {
   grunt: {
     id: 'grunt', name: '巡逻兵', nameCN: '远征巡逻兵',
     // 所有敌人默认带一层基础能量护甲；数值低于生命值，破盾后仍能快速击杀。
-    hp: 150, shield: 113, speed: 4.2, accel: 22,
+    hp: 75, shield: 57, speed: 4.2, accel: 22,
     radius: 0.4, height: 1.75,
     color: [0.82, 0.20, 0.08], accentColor: [1.0, 0.62, 0.18],
     score: 100, alloy: 3,
@@ -66,7 +66,7 @@ export const ENEMY_TYPES = {
   },
   flyer: {
     id: 'flyer', name: '飞行器', nameCN: '游猎无人机',
-    hp: 150, shield: 113, speed: 7.4, accel: 30,
+    hp: 75, shield: 57, speed: 7.4, accel: 30,
     radius: 0.42, height: 0.9,
     color: [0.48, 0.16, 0.76], accentColor: [0.92, 0.48, 1.0],
     score: 120, alloy: 4,
@@ -79,7 +79,7 @@ export const ENEMY_TYPES = {
   },
   heavy: {
     id: 'heavy', name: '重装兵', nameCN: '重装压制者',
-    hp: 150, shield: 113, speed: 2.6, accel: 12,
+    hp: 75, shield: 57, speed: 2.6, accel: 12,
     radius: 0.58, height: 2.15,
     color: [0.72, 0.28, 0.06], accentColor: [1.0, 0.78, 0.20],
     score: 320, alloy: 12,
@@ -92,7 +92,7 @@ export const ENEMY_TYPES = {
   },
   sniper: {
     id: 'sniper', name: '狙击手', nameCN: '定点清除者',
-    hp: 150, shield: 113, speed: 3.0, accel: 16,
+    hp: 75, shield: 57, speed: 3.0, accel: 16,
     radius: 0.4, height: 1.78,
     color: [0.08, 0.58, 0.38], accentColor: [0.42, 1.0, 0.68],
     score: 200, alloy: 7,
@@ -104,7 +104,7 @@ export const ENEMY_TYPES = {
   },
   swarm: {
     id: 'swarm', name: '虫群', nameCN: '拆解虫群',
-    hp: 150, shield: 113, speed: 8.0, accel: 38,
+    hp: 75, shield: 57, speed: 8.0, accel: 38,
     // 虫群不再是贴在脚底的小点：模型、碰撞体与命中盒统一放大 55%。
     radius: 0.34, height: 0.72, baseScale: 1.55,
     color: [0.72, 0.58, 0.02], accentColor: [1.0, 0.94, 0.22],
@@ -119,7 +119,7 @@ export const ENEMY_TYPES = {
   },
   stalker: {
     id: 'stalker', name: '绿影', nameCN: '绿影突袭者',
-    hp: 150, shield: 150, speed: 18, accel: 60, radius: 0.4, height: 1.8,
+    hp: 50, shield: 0, speed: 18, accel: 60, radius: 0.4, height: 1.8,
     color: [0.08, 0.85, 0.22], accentColor: [0.35, 1, 0.55],
     score: 180, alloy: 5, xp: 3, threat: 1.4,
     weapon: {damage: 50, melee: true}, behavior: 'hitrun', meshKind: 'humanoid',
@@ -127,7 +127,7 @@ export const ENEMY_TYPES = {
   },
   blastSpider: {
     id: 'blastSpider', name: '爆蛛', nameCN: '爬墙自爆蛛',
-    hp: 150, shield: 150, speed: 8, accel: 38, radius: 0.42, height: 0.9,
+    hp: 75, shield: 0, speed: 8, accel: 38, radius: 0.42, height: 0.9,
     color: [0.20, 0.13, 0.10], accentColor: [1, 0.35, 0.06],
     score: 100, alloy: 3, xp: 2, threat: 1.0,
     weapon: {damage: 50, melee: true}, behavior: 'bomber', meshKind: 'spider',

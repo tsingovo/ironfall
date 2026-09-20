@@ -485,24 +485,41 @@ if (en) {
   check('普通人形敌人与玩家同为 1.8m 且判定同步',
     en.ENEMY_HUMANOID_HEIGHT === cfg.CFG.move.capsuleHeight && humanoidSizeBad.length === 0,
     humanoidSizeBad.join(','));
-  // 生存基线必须与玩家一致（兵种强弱靠武器/机动/体型/行为体现，不靠暗改血量）。
-  //
-  // 例外表：这些兵种的差异是**有意设计**，不是漏改。
-  //   shieldman    —— 需求 12：血量翻倍（新基线的 2 倍），定位是"难啃"
-  //   stalker      —— 绿影：血量同基线、护盾给满，强调"高速高韧的突袭者"
-  //   blastSpider  —— 爆蛛：同上，靠自爆而不是硬吃伤害
-  //   broodStalker —— 蛛皇 BOSS：基础值故意低，由 director 生成时按层数放大
-  //                   （maxHp *= (5+tier) 等），不能按基线校验
-  // 除此之外**不允许**任何兵种私自偏离基线。
-  const BASELINE_EXEMPT = new Set(['shieldman', 'stalker', 'blastSpider', 'broodStalker']);
-  const baselineBad = ids.filter((id) => {
-    if (BASELINE_EXEMPT.has(id)) return false;
+  // 敌人生存数值。需求 13 明确取消了"敌人与玩家同基线"的约束：
+  // 「绿影和炸蛛不再有护盾，绿影血量改为其目前 1/3，其他小怪血量和护盾状态
+  //   改为目前 1/2，不必和玩家一致」
+  // 所以这里改成**正面断言需求里的具体数值** —— 比原先的"例外表"更严格：
+  // 例外表只保证"没人偷偷偏离"，现在直接锁死每个兵种应该是多少。
+  const PLAYER_HP = cfg.CFG.gameplay.maxHealth;      // 150
+  const PLAYER_SH = cfg.CFG.gameplay.maxShield;      // 113
+  const MOB_HP = Math.round(PLAYER_HP / 2);          // 其他小怪 = 玩家 1/2
+  const MOB_SH = Math.round(PLAYER_SH / 2);
+  const STAT_EXPECT = {
+    // 普通小怪：玩家基线的 1/2
+    grunt: [MOB_HP, MOB_SH], flyer: [MOB_HP, MOB_SH], heavy: [MOB_HP, MOB_SH],
+    sniper: [MOB_HP, MOB_SH], swarm: [MOB_HP, MOB_SH],
+    // 需求 12：盾卫血量翻倍（玩家血量的 2 倍档），且不再受需求 13 的 1/2 影响
+    shieldman: [200, 150],
+    // 需求 13：绿影无护盾、血量为其原先的 1/3
+    stalker: [50, 0],
+    // 需求 13：炸蛛无护盾、血量减半
+    blastSpider: [MOB_HP, 0],
+    // 蛛皇 BOSS：基础值由 director 生成时按层数放大，保持原样
+    broodStalker: [100, 100],
+  };
+  const statBad = [];
+  for (const id of ids) {
+    const want = STAT_EXPECT[id];
+    if (!want) continue;
     const def = en.ENEMY_TYPES[id];
-    return def.hp !== cfg.CFG.gameplay.maxHealth || def.shield !== cfg.CFG.gameplay.maxShield;
-  });
-  check('除有意例外外，敌人与玩家使用相同的生命/护盾上限',
-    baselineBad.length === 0,
-    baselineBad.length ? `偏离基线: ${baselineBad.join(', ')}` : `例外 ${BASELINE_EXEMPT.size} 个`);
+    if (def.hp !== want[0] || def.shield !== want[1]) {
+      statBad.push(`${id}: ${def.hp}/${def.shield} ≠ 期望 ${want[0]}/${want[1]}`);
+    }
+  }
+  check('需求13：绿影/炸蛛无护盾，小怪血量护盾为玩家 1/2', statBad.length === 0,
+    statBad.length ? statBad.join('; ') : `${ids.length} 个兵种数值符合需求`);
+  check('需求13：绿影与炸蛛的护盾严格为 0',
+    en.ENEMY_TYPES.stalker.shield === 0 && en.ENEMY_TYPES.blastSpider.shield === 0);
   check('虫群体积放大且攻击环不再位于玩家脚下', en.ENEMY_TYPES.swarm.baseScale >= 1.5
     && en.ENEMY_TYPES.swarm.preferredRange >= 1.8
     && en.enemyBaseScale(en.ENEMY_TYPES.swarm) >= 1.5);
