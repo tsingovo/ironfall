@@ -72,17 +72,29 @@ function setup(p=player()) {
   for(let tier=1;tier<=10;tier++) {
     const d=Object.create(Director.prototype);d.tier=tier;
     const t=d._table(),total=Object.values(t).reduce((a,b)=>a+b,0);
-    const share=(t.stalker+t.blastSpider)/total;
-    assert.ok(share>0.28);
-    if([3,6,10].includes(tier))assert.ok(share>=0.89,'boss floors dominated by new types');
+    // 需求 11 之后刷怪权重预期变了：绿影只在第三关大量出现，其它关权重归零；
+    // 爆蛛仍按 BOSS 层加成。原来「每关新怪合计 > 28%」的断言不再成立，改为分别校验。
+    const stalkerShare=(t.stalker||0)/total;
+    const spiderShare=(t.blastSpider||0)/total;
+    const share=stalkerShare+spiderShare;
+    if(tier===3){
+      // 第 3 关是绿影主场：它应当占主要权重
+      assert.ok(stalkerShare>0.35,`tier3 stalker share ${(stalkerShare*100).toFixed(0)}%`);
+      assert.ok(share>=0.85,`tier3 new types ${(share*100).toFixed(0)}%`);
+    }else{
+      // 需求 11：其它关不再刷绿影
+      assert.equal(t.stalker,0,`tier${tier} 不应刷绿影（需求11）`);
+      // 爆蛛：BOSS 层（3/6/10）高权重，普通层保持基础存在感
+      const wantSpider=[3,6,10].includes(tier)?0.80:0.15;
+      assert.ok(spiderShare>=wantSpider,`tier${tier} spider ${(spiderShare*100).toFixed(0)}% < ${(wantSpider*100)}%`);
+    }
   }
   assert.equal(ENEMY_TYPES.stalker.speed,18);
   assert.equal(ENEMY_TYPES.blastSpider.weapon.damage,50);
 }
-{
   const {sys,p}=setup();const e=sys.spawn('blastSpider',[0,0,2]);e.age=2;
   sys.setReplicated(true);sys.update(5,p);assert.deepEqual(p.damage,[],'guest cannot run AI/damage');
-}
+
 {
   const {sys}=setup(); const spider=sys.spawn('blastSpider',[0,2,0]);
   spider.wallNormal=[0,0,1];

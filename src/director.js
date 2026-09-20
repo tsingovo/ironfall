@@ -129,7 +129,13 @@ export class Director {
     const bossFloor = [3, 6, 10].includes(this.tier);
     const total = Object.values(base).reduce((a,b)=>a+b,0);
     // Boss 关两种新怪合计约 90% 权重；普通关合计约 29%，受原并发/预算保护。
-    return {...base, stalker: total * (bossFloor ? 4.5 : 0.2), blastSpider: total * (bossFloor ? 4.5 : 0.2)};
+    //
+    // 需求 11：绿影改为**只在第三关大量出现** ——
+    //   第 3 关（本来就是 BOSS 层）保持高权重，是这一关的招牌压力来源；
+    //   其它层权重归零，避免它每一关都刷屏。
+    // 爆蛛不受影响，仍按原来的 BOSS 层加成逻辑走。
+    const stalkerWeight = this.tier === 3 ? total * 4.5 : 0;
+    return { ...base, stalker: stalkerWeight, blastSpider: total * (bossFloor ? 4.5 : 0.2) };
   }
 
   _updateBossSummons(dt) {

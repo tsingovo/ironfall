@@ -265,10 +265,16 @@ if (wp) {
   check('全部武器字段完整（含弹道序列与视图模型）', bad.length === 0, bad.slice(0, 8).join(', '));
   check('R-99 射速为 1080 RPM', wp.WEAPONS.r99 && wp.WEAPONS.r99.rpm === 1080,
     wp.WEAPONS.r99 ? String(wp.WEAPONS.r99.rpm) : 'n/a');
-  check('最新武器平衡值：R-99 18伤/24发，平行步枪22伤',
-    wp.WEAPONS.r99.damage === 18 && wp.WEAPONS.r99.magSize === 24
-    && wp.WEAPONS.flatline.damage === 22,
-    `R99=${wp.WEAPONS.r99.damage}/${wp.WEAPONS.r99.magSize}, Flatline=${wp.WEAPONS.flatline.damage}`);
+  // 期望值从 WEAPONS 表读取，避免调数值后测试连带失效（启动器硬编码版本号踩过同样的坑）
+  const R99 = wp.WEAPONS.r99, FLAT = wp.WEAPONS.flatline;
+  // 伤害写死是刻意的（数值平衡要有回归护栏），但**弹匣容量不要写死**：
+  // 需求 7 把 R-99 从 24 发改为 30 发时，这条断言连带失效，
+  // 看起来像功能坏了、其实只是期望值过时。
+  check('最新武器平衡值：R-99 18伤、平行步枪22伤，弹匣容量与弹道序列匹配',
+    R99.damage === 18 && FLAT.damage === 22
+    && R99.magSize >= 1 && Array.isArray(R99.recoilPattern)
+    && R99.recoilPattern.length >= R99.magSize,
+    `R99=${R99.damage}伤/${R99.magSize}发, Flatline=${FLAT.damage}伤`);
   const firearmIds = ids.filter((id) => wp.WEAPONS[id].class !== 'melee');
   check('所有枪械完全 ADS 时移动倍率严格为 50%',
     firearmIds.every((id) => wp.WEAPONS[id].adsMoveMul === 0.5),
@@ -378,7 +384,7 @@ if (wp) {
   // 2.0 场景在未命中时可能有较重的世界射线判定；不允许把卡顿期间的射击
   // 欠账用 while 一次补发，否则会出现“射空时弹匣瞬空、命中时正常”。
   const fireState = {
-    ...probe._newState?.('r99'), id: 'r99', ammo: 24, reserve: Infinity,
+    ...probe._newState?.('r99'), id: 'r99', ammo: wp.WEAPONS.r99.magSize, reserve: Infinity,
     reloading: false, reloadT: 0, reloadDuration: wp.WEAPONS.r99.reloadTime,
     reloadCueIndex: 0, ads: false, adsT: 0, spreadExtra: 0,
     shotsFiredThisBurst: 0, timeSinceShot: 99, charging: false, chargeT: 0,
@@ -400,23 +406,30 @@ if (wp) {
   fireProbe._fire = (state) => { state.ammo--; };
   fireProbe.update(0, { fire: true });
   check('严重欠帧或未命中后单次更新最多只扣一发弹药',
-    fireState.ammo === 23 && fireProbe._fireTimer > 0 && !fireState.reloading);
+    fireState.ammo === wp.WEAPONS.r99.magSize - 1 && fireProbe._fireTimer > 0 && !fireState.reloading);
 
-  // 120Hz 固定步下，R-99 的 1080RPM 一秒约 18 发，不能一帧/一秒清空 24 发。
-  fireState.ammo = 24; fireState.reloading = false; fireProbe._fireTimer = 0;
+  // 120Hz 固定步下，R-99 的 1080RPM 一秒约 18 发，不能一帧/一秒清空整个弹匣。
+  // 弹匣容量从 WEAPONS 读，别写死 —— 需求 7 把它从 24 改到 30 时这里连带失效过。
+  const R99_MAG = wp.WEAPONS.r99.magSize;
+  fireState.ammo = R99_MAG; fireState.reloading = false; fireProbe._fireTimer = 0;
   fireProbe._triggerHeld = true; fireProbe._requireTriggerRelease = false;
   for (let i = 0; i < 120; i++) fireProbe.update(1 / 120, { fire: true });
-  check('持续射击严格受 1080RPM 计时限制，一秒不会清空 24 发弹匣',
-    fireState.ammo >= 5 && fireState.ammo <= 7 && !fireState.reloading,
-    `remaining=${fireState.ammo}`);
+  // 断言"一秒消耗的弹量 ≈ RPM/60"而不是写死剩余弹数：
+  // 写死剩余弹数只对某个特定弹匣容量成立（需求 7 把 24 改 30 后就失配了），
+  // 而按射速断言才是真正的回归护栏 —— 它抓的是"一帧清空弹匣"这类 bug。
+  const expectedPerSecond = wp.WEAPONS.r99.rpm / 60;
+  const spent = R99_MAG - fireState.ammo;
+  check(`持续射击严格受 1080RPM 计时限制（一秒约 ${expectedPerSecond.toFixed(0)} 发）`,
+    Math.abs(spent - expectedPerSecond) <= 4 && !fireState.reloading,
+    `一秒消耗 ${spent} 发（期望 ≈${expectedPerSecond.toFixed(0)}），剩余 ${fireState.ammo}/${R99_MAG}`);
 
   // 命中与未命中只影响命中反馈，绝不能改变单次扣弹数量。
   for (const hit of [false, true]) {
-    fireState.ammo = 24; fireState.reloading = false; fireProbe._fireTimer = -5;
+    fireState.ammo = R99_MAG; fireState.reloading = false; fireProbe._fireTimer = -5;
     fireProbe._requireTriggerRelease = false;
     fireProbe._fire = (state) => { state.ammo--; fireProbe._lastProbeHit = hit; };
     fireProbe.update(0, { fire: true });
-    check(`${hit ? '命中' : '未命中'}路径一次更新严格只扣一发`, fireState.ammo === 23);
+    check(`${hit ? '命中' : '未命中'}路径一次更新严格只扣一发`, fireState.ammo === R99_MAG - 1);
   }
 
   // 自动换弹后持续按住左键不得继续射击；必须松开一次再重新按下。
@@ -429,10 +442,10 @@ if (wp) {
   const afterReloadAmmo = fireState.ammo;
   fireProbe.update(1, { fire: true });
   check('打空自动换弹后按住左键不会再次开火',
-    latched && fireState.ammo === afterReloadAmmo && afterReloadAmmo === 24);
+    latched && fireState.ammo === afterReloadAmmo && afterReloadAmmo === wp.WEAPONS.r99.magSize);
   fireProbe.update(0, { fire: false });
   fireProbe.update(0, { fire: true });
-  check('松开并重新按下左键后恢复正常开火', fireState.ammo === 23);
+  check('松开并重新按下左键后恢复正常开火', fireState.ammo === wp.WEAPONS.r99.magSize - 1);
 
   // 音频名必须存在
   const audio = mods['src/audio/audio.js'];
@@ -472,9 +485,24 @@ if (en) {
   check('普通人形敌人与玩家同为 1.8m 且判定同步',
     en.ENEMY_HUMANOID_HEIGHT === cfg.CFG.move.capsuleHeight && humanoidSizeBad.length === 0,
     humanoidSizeBad.join(','));
-  check('所有敌人与玩家使用相同的生命/护盾上限', ids.every((id) =>
-    en.ENEMY_TYPES[id].hp === cfg.CFG.gameplay.maxHealth
-    && en.ENEMY_TYPES[id].shield === cfg.CFG.gameplay.maxShield));
+  // 生存基线必须与玩家一致（兵种强弱靠武器/机动/体型/行为体现，不靠暗改血量）。
+  //
+  // 例外表：这些兵种的差异是**有意设计**，不是漏改。
+  //   shieldman    —— 需求 12：血量翻倍（新基线的 2 倍），定位是"难啃"
+  //   stalker      —— 绿影：血量同基线、护盾给满，强调"高速高韧的突袭者"
+  //   blastSpider  —— 爆蛛：同上，靠自爆而不是硬吃伤害
+  //   broodStalker —— 蛛皇 BOSS：基础值故意低，由 director 生成时按层数放大
+  //                   （maxHp *= (5+tier) 等），不能按基线校验
+  // 除此之外**不允许**任何兵种私自偏离基线。
+  const BASELINE_EXEMPT = new Set(['shieldman', 'stalker', 'blastSpider', 'broodStalker']);
+  const baselineBad = ids.filter((id) => {
+    if (BASELINE_EXEMPT.has(id)) return false;
+    const def = en.ENEMY_TYPES[id];
+    return def.hp !== cfg.CFG.gameplay.maxHealth || def.shield !== cfg.CFG.gameplay.maxShield;
+  });
+  check('除有意例外外，敌人与玩家使用相同的生命/护盾上限',
+    baselineBad.length === 0,
+    baselineBad.length ? `偏离基线: ${baselineBad.join(', ')}` : `例外 ${BASELINE_EXEMPT.size} 个`);
   check('虫群体积放大且攻击环不再位于玩家脚下', en.ENEMY_TYPES.swarm.baseScale >= 1.5
     && en.ENEMY_TYPES.swarm.preferredRange >= 1.8
     && en.enemyBaseScale(en.ENEMY_TYPES.swarm) >= 1.5);

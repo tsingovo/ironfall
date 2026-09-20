@@ -31,11 +31,11 @@ export const ENEMY_TYPES = {
   grunt: {
     id: 'grunt', name: '巡逻兵', nameCN: '远征巡逻兵',
     // 所有敌人默认带一层基础能量护甲；数值低于生命值，破盾后仍能快速击杀。
-    hp: 100, shield: 75, speed: 4.2, accel: 22,
+    hp: 150, shield: 113, speed: 4.2, accel: 22,
     radius: 0.4, height: 1.75,
     color: [0.82, 0.20, 0.08], accentColor: [1.0, 0.62, 0.18],
     score: 100, alloy: 3,
-    weapon: { damage: 7, rpm: 260, range: 60, accuracy: 0.72, burst: 4, burstPause: 1.0, projectileSpeed: 0, spreadDeg: 3.4, telegraph: 0.28 },
+    weapon: { damage: 7, rpm: 300, range: 60, accuracy: 0.72, burst: 5, burstPause: 0.95, projectileSpeed: 0, spreadDeg: 3.8, telegraph: 0.28 },
     behavior: 'infantry',
     xp: 1, threat: 1,
     meshKind: 'humanoid',
@@ -43,24 +43,34 @@ export const ENEMY_TYPES = {
   },
   shieldman: {
     id: 'shieldman', name: '盾卫', nameCN: '重盾突击兵',
-    hp: 100, shield: 75, speed: 3.4, accel: 18,
+    // 需求 12：血量翻倍（100+75 → 200+150）。
+    hp: 200, shield: 150, speed: 3.4, accel: 18,
     radius: 0.46, height: 1.8,
     color: [0.16, 0.48, 0.78], accentColor: [0.35, 0.92, 1.0],
     score: 150, alloy: 5,
-    weapon: { damage: 9, rpm: 200, range: 30, accuracy: 0.6, burst: 3, burstPause: 1.4, projectileSpeed: 0, spreadDeg: 4.6, telegraph: 0.36 },
+    // 需求 12：改用霰弹枪，命中按距离判定伤害。
+    // damageFalloff* 三个字段驱动 _fire 里的线性衰减：8m 内满伤，30m 外只剩 18%。
+    // 数值刻意不高（满伤 9/弹丸、射速降到 90），配合血量翻倍，
+    // 定位是「难啃但不构成主要威胁」，而不是变成秒人怪。
+    weapon: {
+      damage: 9, rpm: 90, range: 30, accuracy: 0.6,
+      burst: 1, burstPause: 1.5, projectileSpeed: 0, spreadDeg: 9.5, telegraph: 0.42,
+      pellets: 6,
+      damageFalloffStart: 8, damageFalloffEnd: 30, falloffMinMul: 0.18,
+    },
     behavior: 'charger',
     shieldFront: true, shieldArc: 0.55, shieldDamageMul: 0.22,
     xp: 2, threat: 1.6,
     meshKind: 'humanoid',
-    attackRange: 24, preferredRange: 3.4, strafe: false,
+    attackRange: 22, preferredRange: 3.4, strafe: false,
   },
   flyer: {
     id: 'flyer', name: '飞行器', nameCN: '游猎无人机',
-    hp: 100, shield: 75, speed: 7.4, accel: 30,
+    hp: 150, shield: 113, speed: 7.4, accel: 30,
     radius: 0.42, height: 0.9,
     color: [0.48, 0.16, 0.76], accentColor: [0.92, 0.48, 1.0],
     score: 120, alloy: 4,
-    weapon: { damage: 6, rpm: 320, range: 46, accuracy: 0.66, burst: 5, burstPause: 1.1, projectileSpeed: 42, spreadDeg: 3.0, telegraph: 0.3 },
+    weapon: { damage: 6, rpm: 360, range: 46, accuracy: 0.66, burst: 6, burstPause: 1.0, projectileSpeed: 42, spreadDeg: 3.4, telegraph: 0.3 },
     behavior: 'flyer',
     flying: true, hoverHeight: 5.2, bobAmp: 0.55, bobFreq: 1.7,
     xp: 2, threat: 1.4,
@@ -69,11 +79,11 @@ export const ENEMY_TYPES = {
   },
   heavy: {
     id: 'heavy', name: '重装兵', nameCN: '重装压制者',
-    hp: 100, shield: 75, speed: 2.6, accel: 12,
+    hp: 150, shield: 113, speed: 2.6, accel: 12,
     radius: 0.58, height: 2.15,
     color: [0.72, 0.28, 0.06], accentColor: [1.0, 0.78, 0.20],
     score: 320, alloy: 12,
-    weapon: { damage: 13, rpm: 380, range: 52, accuracy: 0.7, burst: 8, burstPause: 1.7, projectileSpeed: 0, spreadDeg: 4.0, telegraph: 0.5 },
+    weapon: { damage: 13, rpm: 420, range: 52, accuracy: 0.7, burst: 9, burstPause: 1.6, projectileSpeed: 0, spreadDeg: 4.4, telegraph: 0.5 },
     behavior: 'infantry',
     xp: 5, threat: 3.2,
     meshKind: 'heavy',
@@ -82,7 +92,7 @@ export const ENEMY_TYPES = {
   },
   sniper: {
     id: 'sniper', name: '狙击手', nameCN: '定点清除者',
-    hp: 100, shield: 75, speed: 3.0, accel: 16,
+    hp: 150, shield: 113, speed: 3.0, accel: 16,
     radius: 0.4, height: 1.78,
     color: [0.08, 0.58, 0.38], accentColor: [0.42, 1.0, 0.68],
     score: 200, alloy: 7,
@@ -94,7 +104,7 @@ export const ENEMY_TYPES = {
   },
   swarm: {
     id: 'swarm', name: '虫群', nameCN: '拆解虫群',
-    hp: 100, shield: 75, speed: 8.0, accel: 38,
+    hp: 150, shield: 113, speed: 8.0, accel: 38,
     // 虫群不再是贴在脚底的小点：模型、碰撞体与命中盒统一放大 55%。
     radius: 0.34, height: 0.72, baseScale: 1.55,
     color: [0.72, 0.58, 0.02], accentColor: [1.0, 0.94, 0.22],
@@ -109,7 +119,7 @@ export const ENEMY_TYPES = {
   },
   stalker: {
     id: 'stalker', name: '绿影', nameCN: '绿影突袭者',
-    hp: 100, shield: 100, speed: 18, accel: 60, radius: 0.4, height: 1.8,
+    hp: 150, shield: 150, speed: 18, accel: 60, radius: 0.4, height: 1.8,
     color: [0.08, 0.85, 0.22], accentColor: [0.35, 1, 0.55],
     score: 180, alloy: 5, xp: 3, threat: 1.4,
     weapon: {damage: 50, melee: true}, behavior: 'hitrun', meshKind: 'humanoid',
@@ -117,7 +127,7 @@ export const ENEMY_TYPES = {
   },
   blastSpider: {
     id: 'blastSpider', name: '爆蛛', nameCN: '爬墙自爆蛛',
-    hp: 100, shield: 100, speed: 8, accel: 38, radius: 0.42, height: 0.9,
+    hp: 150, shield: 150, speed: 8, accel: 38, radius: 0.42, height: 0.9,
     color: [0.20, 0.13, 0.10], accentColor: [1, 0.35, 0.06],
     score: 100, alloy: 3, xp: 2, threat: 1.0,
     weapon: {damage: 50, melee: true}, behavior: 'bomber', meshKind: 'spider',
@@ -148,6 +158,9 @@ const T_A = new Float32Array(3);
 const T_B = new Float32Array(3);
 const T_C = new Float32Array(3);
 const T_D = new Float32Array(3);
+// 伤害方向暂存：霰弹的多弹丸循环里 RAY_D 每颗都在变，而 applyDamage 之后
+// 同一帧还可能被其它监听者读取，所以不能再借 T_D/T_B，单独开一块。
+const T_HITDIR = new Float32Array(3);
 const RAY_O = new Float32Array(3);
 const RAY_D = new Float32Array(3);
 const HIT_MIN = new Float32Array(3);
@@ -1131,55 +1144,101 @@ export class EnemySystem {
       return;
     }
 
-    // 即时射线
+    // 即时射线。需求 12：支持霰弹 —— `w.pellets > 1` 时逐弹丸独立射线判定伤害，
+    // 每颗弹丸各自算命中与距离衰减。**但只画一条曳光**：6 条光柱会糊满屏幕、
+    // 也让人分不清威胁来向，视觉上收敛成一条更能读。
     RAY_O[0] = muzzle[0]; RAY_O[1] = muzzle[1]; RAY_O[2] = muzzle[2];
-    RAY_D[0] = dir[0]; RAY_D[1] = dir[1]; RAY_D[2] = dir[2];
     const maxDist = w.range;
-    const worldHit = this.world.raycast(RAY_O, RAY_D, maxDist, {});
-    const worldT = worldHit.hit ? worldHit.t : maxDist;
+    const pellets = Math.max(1, Math.min(12, w.pellets | 0) || 1);
+
     // 玩家受击体积：胶囊近似为球
     const pc = T_A;
     pc[0] = player.pos[0];
     pc[1] = player.pos[1] + player.currentHeight * 0.5;
     pc[2] = player.pos[2];
     const pr = Math.max(player.radius, player.currentHeight * 0.32);
-    const ph = raySphereHit(RAY_O, RAY_D, pc, pr);
+
     let tracerEnd = null;
-    if (ph != null && ph < worldT) {
-      // 命中玩家
-      const dmg = w.damage * e.damageMul * (1 + (this.difficulty - 1) * 0.2);
-      const dd = T_D;
-      dd[0] = dir[0]; dd[1] = dir[1]; dd[2] = dir[2];
-      player.applyDamage(dmg, dd, e);
-      Events.emit('hit:player', {
-        damage: dmg,
-        point: new Float32Array([RAY_O[0] + RAY_D[0] * ph, RAY_O[1] + RAY_D[1] * ph, RAY_O[2] + RAY_D[2] * ph]),
-        source: e,
-      });
-      // 弹道在相机前 3.5m 截断，既能明确提示来向，又不会贴近近裁剪面
-      // 膨胀成遮住半个画面的粗光柱。
-      const visibleT = Math.max(0.6, ph - 3.5);
-      T_C[0] = RAY_O[0] + RAY_D[0] * visibleT;
-      T_C[1] = RAY_O[1] + RAY_D[1] * visibleT;
-      T_C[2] = RAY_O[2] + RAY_D[2] * visibleT;
-      tracerEnd = T_C;
-    } else if (worldHit.hit) {
-      Events.emit('hit:world', { point: worldHit.point, normal: worldHit.normal, kind: worldHit.kind });
-      tracerEnd = worldHit.point;
-    } else {
-      T_C[0] = RAY_O[0] + RAY_D[0] * maxDist;
-      T_C[1] = RAY_O[1] + RAY_D[1] * maxDist;
-      T_C[2] = RAY_O[2] + RAY_D[2] * maxDist;
-      tracerEnd = T_C;
+    let anyWorldHit = null;
+    let visiblePellet = false;
+    for (let pi = 0; pi < pellets; pi++) {
+      // 首颗弹丸用已算好的 dir；其余各自在锥内重新散布
+      if (pi === 0) {
+        RAY_D[0] = dir[0]; RAY_D[1] = dir[1]; RAY_D[2] = dir[2];
+      } else {
+        RAY_D[0] = dir[0]; RAY_D[1] = dir[1]; RAY_D[2] = dir[2];
+        M.randomConeDir(RAY_D, spreadRad, this.rng, RAY_D);
+      }
+      const worldHit = this.world.raycast(RAY_O, RAY_D, maxDist, {});
+      const worldT = worldHit.hit ? worldHit.t : maxDist;
+      const ph = raySphereHit(RAY_O, RAY_D, pc, pr);
+
+      if (ph != null && ph < worldT) {
+        // 命中玩家。
+        // 需求 12：霰弹类敌人要"按距离判定伤害"。数据驱动衰减：
+        // 兵种在 weapon 上写 damageFalloffStart / damageFalloffEnd / falloffMinMul，
+        // 命中距离越远伤害越低，线性过渡到 falloffMinMul 倍。
+        // 没有配这三个字段的兵种行为完全不变（衰减因子恒为 1）。
+        let falloff = 1;
+        if (Number.isFinite(w.damageFalloffStart) && Number.isFinite(w.damageFalloffEnd)
+            && w.damageFalloffEnd > w.damageFalloffStart) {
+          const t = M.clamp01((ph - w.damageFalloffStart) / (w.damageFalloffEnd - w.damageFalloffStart));
+          const minMul = Number.isFinite(w.falloffMinMul) ? w.falloffMinMul : 0.3;
+          falloff = 1 + (minMul - 1) * t;
+        }
+        const dmg = w.damage * falloff * e.damageMul * (1 + (this.difficulty - 1) * 0.2);
+        const dd = T_HITDIR;
+        dd[0] = RAY_D[0]; dd[1] = RAY_D[1]; dd[2] = RAY_D[2];
+        player.applyDamage(dmg, dd, e);
+        Events.emit('hit:player', {
+          damage: dmg,
+          point: new Float32Array([RAY_O[0] + RAY_D[0] * ph, RAY_O[1] + RAY_D[1] * ph, RAY_O[2] + RAY_D[2] * ph]),
+          source: e,
+        });
+        if (!visiblePellet) {
+          // 弹道在相机前 3.5m 截断，既能明确提示来向，又不会贴近近裁剪面
+          // 膨胀成遮住半个画面的粗光柱。
+          const visibleT = Math.max(0.6, ph - 3.5);
+          T_C[0] = RAY_O[0] + RAY_D[0] * visibleT;
+          T_C[1] = RAY_O[1] + RAY_D[1] * visibleT;
+          T_C[2] = RAY_O[2] + RAY_D[2] * visibleT;
+          tracerEnd = T_C;
+          visiblePellet = true;
+        }
+      } else if (worldHit.hit) {
+        anyWorldHit = worldHit;
+        if (!tracerEnd) tracerEnd = worldHit.point;
+      } else if (!tracerEnd) {
+        T_C[0] = RAY_O[0] + RAY_D[0] * maxDist;
+        T_C[1] = RAY_O[1] + RAY_D[1] * maxDist;
+        T_C[2] = RAY_O[2] + RAY_D[2] * maxDist;
+        tracerEnd = T_C;
+      }
     }
-    // 即时射线也必须有可见弹道，否则玩家只会凭空掉血。敌弹用兵种强调色，
-    // 狙击弹更粗更久，命中点按真实射线终点截断。
+    // 只有一颗实弹丸时保留原来的"打在世界上的弹着点"反馈，避免霰弹刷屏
+    if (pellets === 1 && anyWorldHit) {
+      Events.emit('hit:world', { point: anyWorldHit.point, normal: anyWorldHit.normal, kind: anyWorldHit.kind });
+    }
+    // 即时射线也必须有可见弹道，否则玩家只会凭空掉血。敌弹用兵种强调色。
+    //
+    // 需求 1：强化远程敌人的弹道观感 —— 轨迹要明显变粗，但**不得比玩家的粗**。
+    // 玩家曳光最细的是 R-99 的 0.060（见 weapons.js），所以这里上限取 0.052，
+    // 保证任何时候玩家自己的弹道都是画面上最醒目的一条。
+    // 同时把曳光存活时间拉长一点，让密集弹雨"看得见来向"。
     if (this.projectiles && tracerEnd) {
+      const TRACER_W = {
+        sniper: 0.052,      // 最粗，但仍在玩家 R-99(0.060) 之下
+        heavy: 0.046,
+        grunt: 0.040,
+        shieldman: 0.036,
+        flyer: 0.034,
+        stalker: 0.040,
+      };
       this.projectiles.spawnTracer(RAY_O, tracerEnd, {
         color: type.accentColor,
-        width: e.typeId === 'sniper' ? 0.045 : 0.026,
+        width: TRACER_W[e.typeId] || 0.038,
         minWidth: 0.02,
-        life: e.typeId === 'sniper' ? 0.22 : 0.13,
+        life: e.typeId === 'sniper' ? 0.26 : 0.18,
         minLength: 0,
         dir: RAY_D,
       });

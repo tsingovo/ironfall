@@ -25,7 +25,10 @@ for (const path of ['world', 'enemy', 'sky']) {
   let peakAim = 0;
   for (let i=0; i<13; i++) { w.update(1/128, {fire:true}); peakAim = Math.max(peakAim, w.recoil.aimPitch); }
   assert.equal(w.stats.shotsFired, 2, `${path}: 100ms must fire two shots, not empty the magazine`);
-  assert.equal(st.ammo,22);
+  // 剩余弹量按实际弹匣容量推导，别写死：需求 7 把 R-99 从 24 改到 30 发后，
+  // 写死的 22 会让这条断言连带失效（看起来像开火链路坏了，其实只是期望值过时）。
+  const remain = WEAPONS.r99.magSize - 2;
+  assert.equal(st.ammo, remain);
   assert.equal(tracers,2);
   assert.ok(w.recoil.patternIndex > 0);
   assert.ok(w.recoil.visPitch > 0, 'camera recoil is retained');
@@ -35,5 +38,5 @@ for (const path of ['world', 'enemy', 'sky']) {
   offShake();
   assert.equal(impacts, path === 'world' ? 2 : 0);
   off();
-  console.log(`PASS ${path}: full firing chain, 100ms / 2 shots / 22 remaining`);
+  console.log(`PASS ${path}: full firing chain, 100ms / 2 shots / ${remain} remaining`);
 }

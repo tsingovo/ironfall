@@ -133,6 +133,12 @@ class Game {
     this._lastPlayerPos = new Float32Array(3);
     this._stuckCheckTimer = 0;
     this._pointerRelockTimer = 0;
+    // 指针锁瞬时丢失的宽限计时（见 _onPointerLockLost）。
+    // 浏览器会在很多**非玩家意图**的情况下短暂释放指针锁（重新请求的间隙、
+    // chrome 短暂抢焦点、扩展介入…），原先一丢失就立刻弹设置菜单并冻结游戏，
+    // 表现就是用户报的「鼠标视角丢失 + 画面卡死」。现在先给这段时间抢回锁。
+    this._lockGraceTimer = 0;
+    this._pendingAutoPause = false;
   }
 
   // ================================================================ 初始化
@@ -230,16 +236,33 @@ class Game {
       if (this._playing && !this.paused && !Input.pointerLocked) this._requestPointerLockWithRetry();
     });
     // 指针锁定状态变化：浏览器会优先消费 Esc，真实环境里不保证页面能收到
-    // Escape keydown。因此非预期丢失锁定时必须直接进入设置菜单。
+    // Escape keydown。
+    //
+    // ⚠ 关键设计：**不要一丢失锁就弹菜单**。
+    // 浏览器会在很多非玩家意图的情况下短暂释放指针锁（重新请求的间隙、
+    // chrome 短暂抢焦点、扩展/输入法介入）。原先收到 pointerlockchange 就立刻
+    // openMenuPanel('settings', { freeze: true }) → paused = true，
+    // 玩家的体感就是「鼠标视角突然没了，然后画面卡死」，而且因为菜单是冻结的，
+    // 他甚至不一定意识到自己能退出。
+    //
+    // 现在的策略：
+    //   1. 锁丢失 → 先给 400ms 宽限期，期间尝试静默抢回（不打断游戏）
+    //   2. 抢回来 → 什么都不做，玩家完全无感
+    //   3. 抢不回 → 才按原来的逻辑进设置菜单（这才是真的被 Esc / 权限拦住了）
+    //   4. 失焦导致的丢失 → 交给 _autoPause，不要弹菜单
     document.addEventListener('pointerlockchange', () => {
       if (Input.pointerLocked && this._pointerRelockTimer) {
         clearTimeout(this._pointerRelockTimer);
         this._pointerRelockTimer = 0;
       }
-      if (!Input.pointerLocked && this._playing && !this.paused && !this.menuKind &&
-          !this._upgradeOpen && !this.automation) {
-        this.openMenuPanel('settings', { freeze: true });
+      if (Input.pointerLocked) {
+        // 抢回来了：撤销宽限期
+        if (this._lockGraceTimer) { clearTimeout(this._lockGraceTimer); this._lockGraceTimer = 0; }
+        this._pendingAutoPause = false;
+        this._syncMenuState();
+        return;
       }
+      this._onPointerLockLost();
       this._syncMenuState();
     });
     document.addEventListener('pointerlockerror', () => {
@@ -250,15 +273,24 @@ class Game {
     });
     // 非独立窗口中，浏览器可能先用 Esc 退出网页全屏且吞掉 keydown。
     // 监听全屏退出，仍然把玩家送进设置；独立 app 窗口不使用网页全屏，不会缩窗。
+    //
+    // 同样要走宽限期：退出全屏不一定伴随指针锁丢失（例如扩展或窗口管理器改了
+    // 全屏状态），但直接冻结游戏会和指针锁丢失叠加成"卡死"。
     document.addEventListener('fullscreenchange', () => {
-      if (!document.fullscreenElement && this.settings.autoFullscreen !== false &&
-          this._playing && !this.paused && !this.menuKind && !this._upgradeOpen && !this.automation) {
-        this.openMenuPanel('settings', { freeze: true });
-      }
+      if (document.fullscreenElement) return;
+      if (this.settings.autoFullscreen === false) return;
+      // 全屏退出时指针锁通常也已经/即将丢失，交给统一路径判定
+      if (!Input.pointerLocked) this._onPointerLockLost();
+      else this._syncMenuState();
     });
-    // 失焦时暂停，避免"离开后还在被打"
+    // 失焦时暂停，避免"离开后还在被打"。
+    // 标记 blurred 走宽限期：指针锁丢失与 blur 往往同时发生，若让
+    // pointerlockchange 直接弹设置菜单，会把"切出去"变成"被冻结的设置界面"，
+    // 而不是玩家预期的自动暂停。
     window.addEventListener('blur', () => {
-      if (this._playing && !this.paused) this._autoPause();
+      if (!this._playing || this.paused) return;
+      if (!Input.pointerLocked) this._onPointerLockLost({ blurred: true });
+      else this._autoPause();
     });
 
     this._wireEvents();
@@ -1468,6 +1500,61 @@ class Game {
    * 返回游戏时先立即锁鼠标；若浏览器这次请求没有生效，1 秒后在游戏仍可操作且
    * 指针仍未锁定的前提下自动补发一次。菜单/背包重新打开后回调会自行失效。
    */
+  /**
+   * 指针锁丢失的处理：先给宽限期尝试抢回，失败才进菜单。
+   *
+   * 抽成独立方法是因为有两个入口：pointerlockchange，以及浏览器吞掉 Esc 时的兜底。
+   *
+   * 为什么需要宽限期：浏览器释放指针锁的原因很多，其中大部分与玩家意图无关
+   * （重新请求间隙、chrome 抢焦点、扩展介入）。一丢失就 freeze 会把"鼠标瞬断一下"
+   * 放大成"游戏卡死"，这是用户实测反馈的核心体验问题。
+   */
+  _onPointerLockLost(options) {
+    const o = options || {};
+    // 已经不在游玩状态 / 已经有面板打开：不需要任何补救
+    if (!this._playing || this.paused || this.menuKind || this._upgradeOpen
+      || (this.inventory && this.inventory.open) || this.automation) {
+      return;
+    }
+    // 失焦导致的丢失：交给自动暂停，别弹设置菜单（那会盖掉玩家真正想看的界面）
+    if (o.blurred) {
+      this._pendingAutoPause = true;
+    }
+    if (this._lockGraceTimer) return;               // 宽限期已在进行中
+    const GRACE_MS = 400;
+    this._lockGraceTimer = setTimeout(() => {
+      this._lockGraceTimer = 0;
+      // 宽限期内如果已经回到游戏状态，就什么都不做
+      if (!this._playing || this.paused || this.menuKind || this._upgradeOpen
+        || (this.inventory && this.inventory.open) || this.automation) return;
+
+      if (this._pendingAutoPause) {
+        this._pendingAutoPause = false;
+        this._autoPause();
+        return;
+      }
+      // 先静默抢一次锁；能抢回来就完全无感
+      if (!Input.pointerLocked) {
+        const ok = Input.requestLock();
+        if (ok) {
+          // 再给一次机会：requestLock 是异步生效的，下一轮 pointerlockchange
+          // 若成功会自行清掉宽限状态。
+          this._pointerRelockTimer = setTimeout(() => {
+            this._pointerRelockTimer = 0;
+            if (!Input.pointerLocked && this._playing && !this.paused && !this.menuKind
+              && !this._upgradeOpen && !(this.inventory && this.inventory.open)
+              && !this.automation) {
+              // 确实抢不回来：这才提示玩家（进设置菜单 = 冻结游戏）
+              this.openMenuPanel('settings', { freeze: true });
+            }
+          }, 400);
+          return;
+        }
+      }
+      this.openMenuPanel('settings', { freeze: true });
+    }, GRACE_MS);
+  }
+
   _requestPointerLockWithRetry() {
     if (!this._playing || this.paused || this.menuKind || this._upgradeOpen
       || (this.inventory && this.inventory.open)) return false;
