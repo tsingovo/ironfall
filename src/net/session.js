@@ -18,7 +18,7 @@ import * as Events from '../core/events.js';
 import { NetTransport, NET_STATUS, defaultWsUrl } from './transport.js';
 import {
   MSG, SRV, EV, FLAG, EFLAG, createCodec, PLAYER_TUPLE, ENEMY_TUPLE,
-  sanitizeChat, q2, q4, q1, parseServerAddress, PROTOCOL_VERSION,
+  sanitizeChat, sanitizeBossPresentation, q2, q4, q1, parseServerAddress, PROTOCOL_VERSION,
 } from './protocol.js';
 import { AvatarRenderer } from './avatar.js';
 
@@ -656,7 +656,10 @@ export class LanSession {
         break;
       case MSG.ENEMY:
       case MSG.ENEMY_FULL:
-        if (!this.isHost && from === this.hostId && this.active) this._applyEnemySnapshot(data.e);
+        if (!this.isHost && from === this.hostId && this.active) {
+          this._applyEnemySnapshot(data.e);
+          this.game.weapons?.projectiles?.applyHostileSnapshot?.(data.p);
+        }
         break;
       case MSG.HIT:
         if (this.isHost) this._applyRemoteHits(from, data.h);
@@ -698,11 +701,19 @@ export class LanSession {
     const enemies = this.game && this.game.enemies;
     if (!enemies || !Array.isArray(hits)) return;
     for (const h of hits) {
+      if (!Array.isArray(h) || h.length < 9) continue;
       const e = enemies.findByNetId(h[0] | 0);
       if (!e || !e.alive) continue;
       const point = [h[3], h[4], h[5]];
       const normal = [h[6], h[7], h[8]];
-      enemies.damage(e, Number(h[1]) || 0, !!h[2], point, normal, { source: from, network: true });
+      // A claimed melee flag alone must not bypass ranged-immune bosses. Validate
+      // against the sender's replicated equipment and a conservative melee reach.
+      const remote = this.remotes.get(from);
+      const melee = (h[9] === true || h.length === 9) && remote?.alive && !remote.stale
+        && remote.weaponId === 'melee' && validVec(remote.pos) && validVec(e.pos)
+        && M.dist3(remote.pos, e.pos) <= 4.5 + Math.min(4, Math.max(0, e.radius || 0));
+      enemies.damage(e, Number(h[1]) || 0, !!h[2], point, normal,
+        { source: from, network: true, melee: !!melee });
     }
   }
 
@@ -744,6 +755,8 @@ export class LanSession {
     // （run.js 的 `remaining === 0 && !this.bossPending`）。房客的导演是停的，
     // 永远不会自己清掉这个标志，不同步就会卡在第 3/6/10 层永远无法撤离。
     if (typeof data.b === 'number') run.bossPending = data.b === 1;
+    if (run.bossExtraction && !run.bossPending && !run.activeExtract
+      && (run.phase === 'extract_ready' || run.phase === 'extracting')) run._activateExtracts?.();
     this._applyDropList(data.d);
   }
 
@@ -865,12 +878,19 @@ export class LanSession {
       }
       const flags = row[8] | 0;
       const alive = (flags & EFLAG.ALIVE) !== 0;
+      e.nightmareDirectDamage = (flags & EFLAG.NIGHTMARE_DIRECT_DAMAGE) !== 0;
+      // Optional extension is sanitized on both ends. Missing extensions clear stale poses.
+      const bossPose = row.length > ENEMY_TUPLE || e.type?.tierBoss || e._netBossPose
+        ? sanitizeBossPresentation(row[16]) : null;
+      const teleported = bossPose && bossPose.teleportSeq !== (e.teleportSeq || 0);
       // 位置/朝向走插值目标；血量与上限立刻生效。
       let t = this._enemyTargets.get(id);
       if (!t) { t = { x: 0, y: 0, z: 0, yaw: 0 }; this._enemyTargets.set(id, t); }
       t.x = row[2]; t.y = row[3]; t.z = row[4]; t.yaw = row[5];
-      if (e._netSnap) {
+      // Do not draw a teleport (or a large recovery correction) sliding across the map.
+      if (e._netSnap || teleported || Math.hypot(t.x - e.pos[0], t.y - e.pos[1], t.z - e.pos[2]) > 8) {
         e.pos[0] = t.x; e.pos[1] = t.y; e.pos[2] = t.z;
+        e.yaw = t.yaw; e.aimYaw = t.yaw;
         e._netSnap = false;
       }
       // 先写上限再写当前值：HUD 血条读的是 hp/maxHp，顺序反了会闪一帧 600%。
@@ -880,6 +900,10 @@ export class LanSession {
       e.specialTimer = boundedNumber(row[13], 60);
       e.wallNormal = specialWallNormal(row[14]);
       e.slashT = boundedNumber(row[15], 1);
+      if (bossPose) {
+        Object.assign(e, bossPose);
+        e._netBossPose = true;
+      }
       enemies.applyNetState(e, row[6], row[7], alive, undefined);
     }
     // 快照里已经不存在的敌人：直接退役，避免客户端留下“幽灵敌人”。
@@ -917,16 +941,19 @@ export class LanSession {
       let flags = 0;
       if (e.alive) flags |= EFLAG.ALIVE;
       if (e.elite) flags |= EFLAG.ELITE;
-      rows.push([
+      if (e.nightmareDirectDamage) flags |= EFLAG.NIGHTMARE_DIRECT_DAMAGE;
+      const row = [
         e.id, slot, q2(e.pos[0]), q2(e.pos[1]), q2(e.pos[2]), q4(e.yaw),
         q1(e.hp), q1(e.shield), flags,
         q1(e.maxHp), q1(e.maxShield), q2(e.scale || 1),
         SPECIAL_PHASES.has(e.specialPhase) ? e.specialPhase : 'approach',
         q2(boundedNumber(e.specialTimer, 60)), specialWallNormal(e.wallNormal),
         q2(boundedNumber(e.slashT, 1)),
-      ]);
+      ];
+      if (e.type?.tierBoss || e.type?.bossKind) row.push(sanitizeBossPresentation(e));
+      rows.push(row);
     }
-    this._t.sendGame({ k: MSG.ENEMY, e: rows });
+    this._t.sendGame({ k: MSG.ENEMY, e: rows, p: game.weapons?.projectiles?.hostileSnapshot?.() });
   }
 
   // ---------------------------------------------------------------- 会话开始
@@ -1121,6 +1148,22 @@ export class LanSession {
     if (!r._hasTarget || Math.hypot(...data.o.map((v, i) => v - r.pos[i])) > 6) return;
     const projectiles = this.game.weapons?.projectiles;
     if (!projectiles) return;
+    // Remote firing is already reliable. Resolve interception against the HOST pool,
+    // not guest hit claims, and never apply enemy damage a second time here.
+    if (this.isHost && r.alive && !r.stale && r.weaponId === data.w && r.weaponId !== 'melee') {
+      const end = validVec(data.e) ? data.e : null;
+      const raw = end ? end.map((v, i) => v - data.o[i]) : data.d;
+      const length = Math.hypot(...raw);
+      if (length > 1e-6 && Number.isFinite(length)) {
+        const dir = Array.from(raw, v => v / length);
+        const max = end ? Math.min(length, 1000) : 1000;
+        const wall = this.game.world?.raycast(data.o, dir, max, {});
+        const enemy = this.game.enemies?.raycastEnemies?.(data.o, dir, max);
+        const hit = projectiles.raycastInterceptable?.(data.o, dir,
+          Math.min(max, wall?.hit ? wall.t : Infinity, enemy?.t ?? Infinity));
+        if (hit) projectiles.damageProjectile(hit.index, 1);
+      }
+    }
     projectiles.spawnTracer(data.o, validVec(data.e) ? data.e : null, {
       color: data.c ? [0.3, 0.85, 1] : [1, 0.8, 0.4], width: 0.035,
       life: 0.22, dir: data.d, minLength: 5, length: 30,

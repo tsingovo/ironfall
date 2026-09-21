@@ -53,6 +53,8 @@ export class AvatarRenderer {
     this.enabled = true;
     this._mats = new Float32Array(MAX_REMOTE * PARTS_PER_BODY * 16);
     this._cols = new Float32Array(MAX_REMOTE * PARTS_PER_BODY * 4);
+    this._rimMats = new Float32Array(MAX_REMOTE * PARTS_PER_BODY * 16);
+    this._rimCount = 0;
     this._drawCount = 0;
     this._bodyCount = 0;
     this._phase = new Float32Array(MAX_REMOTE);
@@ -70,6 +72,7 @@ export class AvatarRenderer {
     if (!this.enabled || !e || !e.sharedMeshes || !players || players.length === 0) {
       this._drawCount = 0;
       this._bodyCount = 0;
+      this._rimCount = 0;
       return 0;
     }
     const mesh = e.sharedMeshes.cube;
@@ -79,10 +82,14 @@ export class AvatarRenderer {
     const cols = this._cols;
     let n = 0;
     let bodies = 0;
+    let rims = 0;
 
     for (let pi = 0; pi < players.length && pi < MAX_REMOTE; pi++) {
       const p = players[pi];
       if (!p || !p.pos) continue;
+      // World-space visibility only. Never project off-screen arrows or reveal players through walls.
+      if (e.inFrustumSphere && !e.inFrustumSphere([p.pos[0],p.pos[1]+.9,p.pos[2]],1.4)) continue;
+      const firstPart = n;
       const alive = p.alive !== false;
       const speed = p.state && Number.isFinite(p.state.hspeed) ? p.state.hspeed : 0;
       const grounded = !p.state || p.state.grounded !== false;
@@ -184,22 +191,42 @@ export class AvatarRenderer {
           cols.set([...color, 1], n * 4); n++;
         }
       }
+      if (alive) {
+        // Thin expanded silhouette, drawn BEFORE the opaque body with normal depth testing.
+        // It never writes depth, so it cannot hide the body or poison later world passes.
+        for (let i=firstPart;i<n;i++) {
+          const dst=this._rimMats.subarray(rims*16,rims*16+16);
+          dst.set(mats.subarray(i*16,i*16+16));
+          for(let axis=0;axis<3;axis++) {
+            const a=axis*4, length=Math.hypot(dst[a],dst[a+1],dst[a+2]);
+            const expand=length>0 ? 1+.018/length : 1;
+            dst[a]*=expand;dst[a+1]*=expand;dst[a+2]*=expand;
+          }
+          rims++;
+        }
+      }
       bodies++;
     }
 
     this._drawCount = n;
     this._bodyCount = bodies;
+    this._rimCount = rims;
     if (n > 0) {
+      if (rims > 0) e.drawInstanced(mesh,this._rimMats.subarray(0,rims*16),rims,{
+        color:[.3,.88,1,1],unlit:true,cull:false,depthWrite:false,noDepthTest:false,
+      });
       e.drawInstanced(mesh, mats.subarray(0, n * 16), n, {
         colors: cols.subarray(0, n * 4),
         cull: false,
+        depthWrite: true,
+        noDepthTest: false,
       });
     }
     return n;
   }
 
   debugState() {
-    return { enabled: this.enabled, bodies: this._bodyCount, instances: this._drawCount };
+    return { enabled: this.enabled, bodies: this._bodyCount, instances: this._drawCount, rimInstances:this._rimCount };
   }
 }
 

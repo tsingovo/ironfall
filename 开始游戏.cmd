@@ -1,5 +1,6 @@
 @echo off
 setlocal
+chcp 65001 >nul 2>nul
 cd /d "%~dp0"
 
 >>"%~dp0launch.log" echo [%date% %time%] CMD entry started.
@@ -29,6 +30,6 @@ echo.
 echo IRONFALL failed to start. Error code: %RESULT%
 echo See: %~dp0launch.log
 echo.
-type "%~dp0launch.log"
+powershell.exe -NoLogo -NoProfile -Command "Get-Content -LiteralPath '%~dp0launch.log' -Encoding UTF8 -Tail 16"
 pause
 exit /b %RESULT%

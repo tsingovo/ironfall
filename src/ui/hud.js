@@ -1,3 +1,4 @@
+import { BUILD_TAG } from '../core/config.js';
 // ==== ui/hud.js — IRONFALL 的 DOM HUD / 菜单 / 加载遮罩（零依赖、全字段防御） ====
 
 // ── 设计意图 ────────────────────────────────────────────────────────────────
@@ -58,14 +59,14 @@ const CREDITS_LINES = [
 // 菜单静态描述：构造时一次性建 DOM，之后只切 class / 文本。
 const MENU_SPEC = {
   main: {
-    tag: 'IRONFALL // BUILD 2.1.7',
+    tag: BUILD_TAG,
     title: '钢铁远征',
     sub: 'IRONFALL',
     note: '你是钢铁远征舰队熔炉世界里的拾荒者。搜刮、变强、活着撤离。',
     items: [
       { key: '1', label: '开始远征', sub: 'NEW EXPEDITION', intent: 'start_run', primary: true },
       { key: '2', label: '继续', sub: 'CONTINUE', intent: 'resume' },
-      { key: '3', label: '战役选择', sub: 'TEN-MISSION CAMPAIGN', intent: 'open_campaign' },
+      { key: '3', label: '战役选择', sub: 'ELEVEN-MISSION CAMPAIGN', intent: 'open_campaign' },
       { key: '4', label: '局外军械库', sub: 'PERMANENT ARMORY', intent: 'open_armory' },
       { key: '5', label: '远征简报', sub: 'MISSION BRIEFING', intent: 'open_briefing' },
       { key: '6', label: '设置', sub: 'SETTINGS', intent: 'open_settings' },
@@ -76,26 +77,26 @@ const MENU_SPEC = {
     ],
   },
   campaign: {
-    tag: 'CAMPAIGN // 01—10',
+    tag: 'CAMPAIGN // 01—11',
     title: '战役选择',
     sub: 'EXPEDITION TIERS',
-    note: '十关全部开放，随时可直接部署。层数越高，守关首领与压力越强。',
+    note: '十一关全部开放；第十一关“噩梦”同时包含 20 个历代首领。',
     campaign: true,
-    items: Array.from({ length: 10 }, (_v, i) => ({
-      key: String(i + 1), label: `第 ${i + 1} 关`, sub: '可部署', intent: 'select_mission', tier: i + 1,
+    items: Array.from({ length: 11 }, (_v, i) => ({
+      key: i === 10 ? 'N' : String(i + 1), label: `第 ${i + 1} 关`, sub: '可部署', intent: 'select_mission', tier: i + 1,
       primary: i === 0,
     })).concat([{ key: '0', label: '返回', sub: 'BACK', intent: 'open_main' }]),
   },
   // ESC 菜单里的"切换关卡"面板：条目结构与战役选择完全相同，只是意图不同。
   // 从游戏内打开，切换后立即在新地图重新部署，且**保留背包/配件/强化加成**。
   switch_tier: {
-    tag: 'SWITCH TIER // 01—10',
+    tag: 'SWITCH TIER // 01—11',
     title: '切换关卡',
     sub: 'REDEPLOY',
-    note: '十关全部开放。切换后立即在新地图重新部署 —— 背包、配件与强化加成都会保留。',
+    note: '十一关全部开放。切换后立即在新地图重新部署 —— 背包、配件与强化加成都会保留。',
     campaign: true,
-    items: Array.from({ length: 10 }, (_v, i) => ({
-      key: String(i + 1), label: `第 ${i + 1} 关`, sub: '可部署', intent: 'switch_tier', tier: i + 1,
+    items: Array.from({ length: 11 }, (_v, i) => ({
+      key: i === 10 ? 'N' : String(i + 1), label: `第 ${i + 1} 关`, sub: '可部署', intent: 'switch_tier', tier: i + 1,
       primary: i === 0,
     })).concat([{ key: '0', label: '返回', sub: 'BACK', intent: 'close_menu' }]),
   },
@@ -224,7 +225,7 @@ const SETTINGS_SPEC = [
   { id: 'sniperSensitivity', label: '狙击镜灵敏度', sub: 'SNIPER ADS · 4× MULTIPLIER', intent: 'set_sniper_sensitivity', type: 'range', min: 0.05, max: 1, step: 0.05, def: 0.35 },
   { id: 'volume', label: '音量', sub: 'MASTER VOLUME', intent: 'set_volume', type: 'range', min: 0, max: 1, step: 0.01, def: 0.8 },
   { id: 'invertY', label: 'Y 轴反转', sub: 'INVERT Y AXIS', intent: 'set_invert_y', type: 'toggle', def: false },
-  { id: 'fpsCap', label: '帧率上限', sub: 'FPS CAP', intent: 'set_fps_cap', type: 'select', def: 0, options: [[0, '无上限'], [60, '60'], [120, '120'], [144, '144'], [240, '240']] },
+  { id: 'fpsCap', label: '帧率上限', sub: 'FPS CAP', intent: 'set_fps_cap', type: 'select', def: 240, options: [[0, '无上限'], [60, '60'], [120, '120'], [144, '144'], [240, '240']] },
   { id: 'quality', label: '画质', sub: 'QUALITY', intent: 'set_quality', type: 'select', def: 'high', options: [['low', '低'], ['medium', '中'], ['high', '高'], ['ultra', '极高']] },
   // 全屏能避免 Ctrl+W 等浏览器保留快捷键被误触，默认开启
   { id: 'autoFullscreen', label: '自动全屏', sub: 'AUTO FULLSCREEN', intent: 'set_auto_fullscreen', type: 'toggle', def: true },
@@ -1744,6 +1745,10 @@ export class HUD {
 
   _renderObjective() {
     const el = this.el;
+    if (this.ctx?.run?.bossExtraction) {
+      this._cls(el.objective, 'hud-objective--on', false);
+      return;
+    }
     const o = this._objective || this._readObjective();
     if (!o || !o.label) {
       this._cls(el.objective, 'hud-objective--on', false);
@@ -1828,7 +1833,7 @@ export class HUD {
 
     const w = Math.max(32, num(canvas.width, 360));
     const h = Math.max(8, num(canvas.height, 28));
-    const obj = this._objectivePoint || this._readPoint('objective');
+    const obj = this.ctx?.run?.bossExtraction ? null : (this._objectivePoint || this._readPoint('objective'));
     const ext = this._extractPoint || this._readPoint('extract');
     const pos = p && p.pos ? p.pos : null;
     const objB = obj && pos ? bearingDeg(num(obj[0]) - num(pos[0]), num(obj[2]) - num(pos[2])) : NaN;
@@ -1878,6 +1883,7 @@ export class HUD {
 
     // 文本方位（给自动化断言用，也方便玩家读）
     this._renderBearing(el.bearingObjective, '目标', objB, obj, pos, 'hud-bearing--none');
+    this._style(el.bearingObjective, 'display', this.ctx?.run?.bossExtraction ? 'none' : '');
     this._renderBearing(el.bearingExtract, '撤离', extB, ext, pos, 'hud-bearing--none');
   }
 
@@ -1897,6 +1903,7 @@ export class HUD {
   _readPoint(kind) {
     const c = this.ctx || {};
     const run = c.run;
+    if (kind === 'objective' && run?.bossExtraction) return null;
     if (run) {
       try {
         // currentObjectivePoint() 在目标全部完成后会回退为撤离点；它只属于
@@ -1935,8 +1942,12 @@ export class HUD {
     if (!el.waypoint) return;
     const c = this.ctx || {};
     const run = c.run;
+    if (run?.bossExtraction && run.bossPending) {
+      this._cls(el.waypoint, 'hud-waypoint--on', false);
+      return;
+    }
     const p = this._player();
-    const point = this._objectivePoint || this._readPoint('objective');
+    const point = run?.bossExtraction ? this._readPoint('extract') : (this._objectivePoint || this._readPoint('objective'));
     if (!p || !point || !p.forward || !p.right || !p.up || !run) {
       this._cls(el.waypoint, 'hud-waypoint--on', false);
       return;
@@ -2362,36 +2373,14 @@ export class HUD {
 
   // Called with the world camera before rendering the first-person weapon camera.
   setLanNameplates(peers, engine) {
-    if (!this._lanNameplateEls) {
-      this._lanNameplateEls = [];
-      for (let i = 0; i < 3; i++) {
-        if (!this.doc?.createElement) return;
-        const el = this.doc.createElement('div');
-        el.className = 'lan-world-nameplate';
-        this.root.appendChild(el);
-        this._lanNameplateEls.push(el);
-      }
+    // Kept for main-loop compatibility. Player identity is now a depth-tested model rim,
+    // not a screen-space label, bearing arrow or through-wall position marker.
+    for (const el of this._lanNameplateEls || []) {
+      if (el.remove) el.remove();
+      else if (el.style) el.style.display = 'none';
     }
-    const vp = engine?.viewProj;
-    const eye = engine?.cameraPos;
-    const world = this.ctx?.world;
-    const w = this._rect.w, h = this._rect.h;
-    for (let i = 0; i < 3; i++) {
-      const el = this._lanNameplateEls[i], peer = peers?.[i], pos = peer?.pos;
-      let visible = !!(peer && peer.alive && pos && vp && eye && !this._menu);
-      if (visible) {
-        const cw = vp[3]*pos[0] + vp[7]*pos[1] + vp[11]*pos[2] + vp[15];
-        const x = (vp[0]*pos[0]+vp[4]*pos[1]+vp[8]*pos[2]+vp[12])/cw;
-        const y = (vp[1]*pos[0]+vp[5]*pos[1]+vp[9]*pos[2]+vp[13])/cw;
-        visible = cw > 0.05 && Math.abs(x) < 1 && Math.abs(y) < 1 &&
-          (!world?.lineOfSight || world.lineOfSight(eye, pos, { hitBoxes: true, hitTriangles: true }));
-        if (visible) {
-          this._style(el, 'transform', `translate(${((x+1)*0.5*w).toFixed(1)}px,${((1-y)*0.5*h).toFixed(1)}px) translate(-50%,-100%)`);
-          this._text(el, `${peer.name || '玩家'} · ${lanItemName(peer.heldItem || peer.weaponId)}`);
-        }
-      }
-      this._style(el, 'display', visible ? 'block' : 'none');
-    }
+    this._lanNameplateEls = [];
+    void peers; void engine;
   }
 
   /**
@@ -2671,9 +2660,9 @@ export class HUD {
       const meta = this.ctx && this.ctx.meta;
       const missions = (this.ctx && this.ctx.missions) || [];
       // 需求：关卡无条件开放，不锁定。
-      // 十关全部可选，只显示任务名与地图，不再出现"未解锁"、也不再置灰。
+      // 十一关全部可选，只显示任务名与地图，不再出现"未解锁"、也不再置灰。
       // 已撤离过的层数仍标一下，给玩家一个进度参考。
-      const cleared = Math.max(0, Math.min(10, num(meta && meta.unlocked && meta.unlocked.tiers, 1) - 1));
+      const cleared = Math.max(0, Math.min(11, num(meta && meta.unlocked && meta.unlocked.tiers, 1) - 1));
       for (const entry of (this._menuItems[kind] || [])) {
         const tier = entry.spec.tier;
         if (!tier) continue;
@@ -2884,6 +2873,12 @@ export class HUD {
     if (code === 'ArrowLeft') { this._adjustNav(-1); prevent(); return; }
     if (code === 'Enter' || code === 'NumpadEnter' || code === 'Space') {
       this._activate(this._navTargets[this._navIndex]);
+      prevent();
+      return;
+    }
+    if (code === 'KeyN' && (this._menu === 'campaign' || this._menu === 'switch_tier')) {
+      const items = this._menuItems[this._menu] || [];
+      if (items[10]) this._activate({ type: 'item', item: items[10].spec });
       prevent();
       return;
     }

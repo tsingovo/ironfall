@@ -153,8 +153,9 @@ async function probeServer(candidatePort = port) {
       currentBuild = rootPage.text.includes(BUILD_TAG);
       if (!currentBuild) {
         // 开发目录的 index.html 不内联 HUD，因此再检查源码
-        const hudSource = await getText(`${base}/src/ui/hud.js`);
-        currentBuild = hudSource.status === 200 && hudSource.text.includes(BUILD_TAG);
+        const configSource = await getText(`${base}/src/core/config.js`);
+        const version = /BUILD_VERSION\s*=\s*['"]([^'"]+)['"]/.exec(configSource.text);
+        currentBuild = configSource.status === 200 && !!version && `IRONFALL // BUILD ${version[1]}` === BUILD_TAG;
       }
     } else {
       currentBuild = hasBuildTag;

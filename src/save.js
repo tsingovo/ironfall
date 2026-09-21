@@ -5,7 +5,7 @@ const META_KEY = 'ironfall.meta.v1';
 const RUN_KEY = 'ironfall.run.v1';
 const SETTINGS_KEY = 'ironfall.settings.v1';
 const META_VERSION = 2;
-export const CAMPAIGN_TIER_COUNT = 10;
+export const CAMPAIGN_TIER_COUNT = 11;
 
 /** 永久改件（用远征点数购买，跨局生效） */
 export const PERKS = {
@@ -308,7 +308,7 @@ export class MetaProgress {
     return out;
   }
 
-  /** 当前可进入的战役关卡（1..10）。 */
+  /** 当前可进入的战役关卡（1..11）。 */
   currentTier() { return this.unlocked.currentTier; }
 
   maxUnlockedTier() { return this.unlocked.tiers; }
@@ -316,7 +316,7 @@ export class MetaProgress {
   /**
    * 该关卡是否可选。
    *
-   * 需求：**关卡无条件开放，不锁定** —— 十关随时都能直接部署。
+   * 需求：**关卡无条件开放，不锁定** —— 十一关随时都能直接部署。
    * 因此这里只校验"是不是合法层数"，不再比对 unlocked.tiers。
    * unlocked.tiers 仍然记录实际推进到第几关（用于把界面上的"已撤离"标记
    * 与结算难度缩放），但它**不再是准入条件**。
@@ -350,7 +350,7 @@ export class MetaProgress {
   /**
    * 成功完成一关后的战役推进，返回**新的当前关卡**。
    *
-   * 第 10 关（CAMPAIGN_TIER_COUNT）之后循环回第 1 关：十层远征是闭环的，
+   * 第 11 关“噩梦”（CAMPAIGN_TIER_COUNT）之后循环回第 1 关。
    * 打通后重新开始，但已解锁的层数与元进度全部保留。
    * 之前的注释写成「第 10 关停留在第 10 关」，与实现不符，已更正。
    */

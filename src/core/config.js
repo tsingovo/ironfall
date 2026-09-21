@@ -12,7 +12,7 @@ import { toRad } from './math.js';
  * 结果每次升版本号都会静默失配（2.1.6 → 2.1.7 时直接导致"端口被占用"启动失败）。
  * 现在 HUD 标记由这里派生，启动器改为读源码里的这一行，升版本只需改这一处。
  */
-export const BUILD_VERSION = '2.1.7';
+export const BUILD_VERSION = '2.1.9';
 
 /** HUD 标题栏展示的构建标记（与 BUILD_VERSION 同源，不要另写一份） */
 export const BUILD_TAG = `IRONFALL // BUILD ${BUILD_VERSION}`;
@@ -44,7 +44,7 @@ const DEFAULTS = {
     fogNear: 70,
     fogFar: 420,
     clearColor: [0.045, 0.055, 0.075, 1],
-    targetFpsCap: 0,           // 0 = 不限制
+    targetFpsCap: 240,         // 默认 240 FPS；设置中仍可改为无上限或更低档
     terrainResolution: 96,
     cullDistance: 700,
     maxInstancesPerDraw: 4096,

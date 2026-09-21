@@ -157,10 +157,12 @@ export class Run {
       hp: o.hp || 100,
     }));
     this.extractPoints = this.world.extractPoints() || [];
+    this.bossExtraction = this.objectives.length === 0;
+    this.bossPending = this.bossExtraction;
     this.supplyStations = (this.world.supplyStations() || []).map((s) => ({ ...s, used: false }));
 
     Events.emit('run:start', { runId: this.runId, tier: this.tier });
-    if (this.objectives.length === 0) {
+    if (this.objectives.length === 0 && !this.bossPending) {
       // 没有目标就直接开撤离
       this.phase = RUN_PHASE.EXTRACT_READY;
       this._activateExtracts();
@@ -279,12 +281,11 @@ export class Run {
         }
       }
     }
-    if (remaining === 0 && !this.bossPending && this.phase === RUN_PHASE.OBJECTIVES) {
-      if (this.tier === 10) { this.end(true); return; }
+    if (authoritative && remaining === 0 && !this.bossPending && this.phase === RUN_PHASE.OBJECTIVES) {
       this.phase = RUN_PHASE.EXTRACT_READY;
       this._activateExtracts();
       Events.emit('ui:message', {
-        title: '全部目标已摧毁', sub: '撤离航道已开启 —— 前往撤离点', kind: 'good',
+        title: '撤离航道已开启', sub: '到达任意撤离点即可通关', kind: 'good',
       });
       Events.emit('audio:play', { name: 'objective_complete' });
     }
@@ -355,6 +356,7 @@ export class Run {
   }
 
   currentObjectiveLabel() {
+    if (this.bossExtraction) return this.bossPending ? '击败本层首领' : '前往任意撤离点';
     if (this.phase === RUN_PHASE.EXTRACT_READY || this.phase === RUN_PHASE.EXTRACTING) {
       return '撤离至指定航道';
     }
@@ -363,6 +365,7 @@ export class Run {
   }
 
   currentObjectivePoint() {
+    if (this.bossExtraction) return null;
     const next = this.objectives.find((o) => !o.done);
     return next ? next.pos : (this.activeExtract ? this.activeExtract.pos : null);
   }
@@ -379,7 +382,7 @@ export class Run {
     this.activeExtract = best || (this.extractPoints[0] || null);
     if (this.activeExtract) {
       Events.emit('ui:message', {
-        title: '撤离点已标记', sub: '在全息信标范围内滞留以完成撤离', kind: 'info',
+        title: '撤离点已标记', sub: this.bossExtraction ? '在任意绿色撤离信标内坚持 2 秒' : '在全息信标范围内滞留以完成撤离', kind: 'info',
       });
     }
   }
@@ -395,6 +398,30 @@ export class Run {
 
     const actors = Array.isArray(this.objectiveInteractors) && this.objectiveInteractors.length
       ? this.objectiveInteractors : (p ? [p] : []);
+
+    if (this.bossExtraction) {
+      if (this.bossPending) return;
+      const reached = this.extractPoints.find(point => point.active && actors.some(actor =>
+        actor?.alive !== false && actor?.pos && M.dist3(actor.pos, point.pos) <= point.radius));
+      const required = 2.0;
+      if (reached) {
+        this.activeExtract = reached;
+        if (this.phase === RUN_PHASE.EXTRACT_READY) {
+          this.phase = RUN_PHASE.EXTRACTING;
+          Events.emit('audio:play', { name: 'extract_countdown' });
+          Events.emit('ui:message', { title: '撤离校验中', sub: '在信标内坚持 2 秒', kind: 'warn' });
+        }
+        this.extractHold += dt;
+        if (this.extractHold >= required) { this.extractHold = required; this.end(true); }
+      } else {
+        if (this.phase === RUN_PHASE.EXTRACTING) {
+          this.phase = RUN_PHASE.EXTRACT_READY;
+          Events.emit('ui:message', { title: '撤离中断', sub: '返回任意绿色撤离信标', kind: 'warn' });
+        }
+        this.extractHold = 0;
+      }
+      return;
+    }
 
     let anyoneInZone = false;
     let disturbed = 0;
@@ -429,13 +456,14 @@ export class Run {
   }
 
   get extractProgress() {
-    return M.clamp01(this.extractHold / Math.max(0.01, this.extractRequired));
+    const required = this.bossExtraction ? 2.0 : this.extractRequired;
+    return M.clamp01(this.extractHold / Math.max(0.01, required));
   }
 
   extractTimeLeft() {
     if (this.phase !== RUN_PHASE.EXTRACTING && this.phase !== RUN_PHASE.EXTRACT_READY) return null;
     if (!this.activeExtract || this.extractHold <= 0) return null;
-    return Math.max(0, this.extractRequired - this.extractHold);
+    return Math.max(0, (this.bossExtraction ? 2.0 : this.extractRequired) - this.extractHold);
   }
 
   _updateSupplyStations(dt, p) {

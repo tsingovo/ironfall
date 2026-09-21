@@ -1950,7 +1950,7 @@ export function generateMap(opts) {
   const o = opts || {};
   const seed = (o.seed == null ? 1337 : o.seed | 0) >>> 0;
   const biome = getBiome(o.biome);
-  const tier = clamp(o.tier == null ? 1 : o.tier | 0, 1, 10);
+  const tier = clamp(o.tier == null ? 1 : o.tier | 0, 1, 11);
   const requested = o.archetype && ARCHETYPES[o.archetype]
     ? ARCHETYPES[o.archetype]
     : ARCHETYPES[ARCHETYPE_IDS[seed % ARCHETYPE_IDS.length]];
@@ -2625,6 +2625,12 @@ export const MISSIONS = Object.freeze([
     brief: '这是最后一班岗：把热核中继从锚站核心拆下来，带回去。\n整座站都在朝地表坠落，脊柱塔会是你唯一的路。\n你会掉下去一次。别掉第二次。',
     biome: 'orbital_anchor', archetype: 'reactor_spine', seedBase: 10337,
     modifiers: Object.freeze(missionModifiers(10, 1.75)),
+  },
+  {
+    id: 'm11', tier: 11, world: '锻造噩梦 N-0', title: '噩梦',
+    brief: '求救信号不是来自另一座星港，而是所有战斗记录叠成的陷阱。\n二十个守关首领同时苏醒，每一种至少出现两次。\n它们的火力受到干扰而减半，但第五层规格的生命值不会给你第二次机会。',
+    biome: 'orbital_anchor', archetype: 'anchor_ring', seedBase: 11447,
+    modifiers: Object.freeze(missionModifiers(5, 1.55)),
   },
 ]);
 

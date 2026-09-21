@@ -128,6 +128,8 @@ export class Player {
     // 武器/治疗等上层动作施加的移动速度倍率。单独保存而不修改输入轴：
     // _wishDir() 会归一化输入，缩放 moveX/moveY 并不能真正降低目标速度。
     this.actionMoveSpeedMul = 1;
+    this.bossSlowTime = 0;
+    this.bossSlowFactor = 1;
 
     // 状态
     this.state = {
@@ -263,6 +265,8 @@ export class Player {
   }
 
   _resetMoveState() {
+    this.bossSlowTime = 0;
+    this.bossSlowFactor = 1;
     const s = this.state;
     // 重生/传送也必须结束持续动作。事件接线层据此关闭循环声部，避免旧状态
     // 留下永不停止的滑铲、墙跑或抓钩声音。
@@ -366,6 +370,8 @@ export class Player {
     this.updateBasis();
 
     if (this.invulnTime > 0) this.invulnTime -= dt;
+    this.bossSlowTime = Math.max(0, (this.bossSlowTime || 0) - dt);
+    if (!this.bossSlowTime) this.bossSlowFactor = 1;
     if (this._cheatDeathCooldown > 0) this._cheatDeathCooldown -= dt;
 
     // --- 计时器衰减
@@ -604,7 +610,7 @@ export class Player {
     if (input.moveY < 0) wishSpeed *= move.backwardMul;
     // ADS 等动作的速度限制作用在最终目标速度上；摩擦仍照常工作，所以已有
     // 动量会自然减到新上限，而不是按右键时生硬地把玩家瞬间刹停。
-    wishSpeed *= this.actionMoveSpeedMul;
+    wishSpeed *= this.actionMoveSpeedMul * this._bossMovementMul();
     // 侧向不额外惩罚（保留 strafe 手感）
 
     accelerate(this.vel, WISH, wishSpeed, move.groundAccel * (mods.groundAccelMul || 1), dt, -1);
@@ -620,6 +626,12 @@ export class Player {
       this.vel[0] = 0;
       this.vel[2] = 0;
     }
+  }
+
+  _bossMovementMul() {
+    // 不缩放最终速度/抓钩冲量，只限制常规移动的目标速度。
+    return this.grapple.active || !(this.bossSlowTime > 0)
+      ? 1 : M.clamp(this.bossSlowFactor ?? 0.4, 0.1, 1);
   }
 
   /** 边坡力：把重力在坡面上的切向分量作用到速度上 */
@@ -723,7 +735,7 @@ export class Player {
 
     this._wishDir(input, WISH, true);
     const wishSpeed = (move.sprintSpeed * 0.86) * (mods.airSpeedMul || 1)
-      * this.actionMoveSpeedMul;
+      * this.actionMoveSpeedMul * this._bossMovementMul();
 
     // 空中加速：投影速度上限让"速度矢量对齐"成为可能（tap-strafe 手感）
     // 纯前推时不启用（避免无脑加速），有侧向分量时启用

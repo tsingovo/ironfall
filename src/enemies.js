@@ -10,6 +10,7 @@
 import { CFG } from './core/config.js';
 import * as M from './core/math.js';
 import * as Events from './core/events.js';
+import { getBossShape, poseBossPart, bossModelRadius } from './fx/boss-models.js';
 
 // 尺寸基线：普通人形敌人的站立高度严格对齐玩家 1.8m 胶囊，而不是用一个含糊的
 // “放大百分比”。重装、无人机和虫群保留兵种本身的体型差异。scale 同时作用于
@@ -133,7 +134,7 @@ export const ENEMY_TYPES = {
     // 表现为"高处狙击手永远刷不出来"。现在压到 70/45，环落在 60–110m 内。
     attackRange: 70, preferredRange: 45, strafe: false, keepDistance: true,
     // 刷怪高度偏好（供 director 选点用）：优先高台
-    prefersHighGround: true, highGroundMin: 6,
+    prefersHighGround: true, highGroundMin: 6, stationaryHighGround: true,
   },
   swarm: {
     id: 'swarm', name: '虫群', nameCN: '拆解虫群',
@@ -216,7 +217,9 @@ export const ENEMY_TYPES = {
     // 需求：转向慢；前面板有蓝色透明护盾；击中护盾不算击中 boss
     turnRate: 1.1,                       // 弧度/秒，明显慢于玩家的转身
     frontShield: true,                   // 仅正面挡伤（复用 shieldFront 的判定思路）
-    shieldArc: 0.42, shieldDamageMul: 0.0,
+    // 与 boss-models.js 中 4.3m 宽、距本体 3.55m 的实体护盾一致；
+    // 精确矩形拦截由 raycastEnemies 处理，这个角度判定是网络命中兜底。
+    shieldArc: 0.60, shieldDamageMul: 0.0,
     summonSpiderCount: 2.5,              // 一次放 2~3 只爆炸蜘蛛
     slowOnHit: { factor: 0.4, time: 3 },  // 命中后减速 60% 持续 3 秒（不影响钩锁）
   },
@@ -255,6 +258,7 @@ export const ENEMY_TYPES = {
     diveRange: 100, diveCooldown: 7, diveSpeed: 34, climbSpeed: 18,
   },
   tier7CloneGoblin: {
+    baseScale: 1,
     id: 'tier7CloneGoblin', name: '克隆哥布林', nameCN: '克隆哥布林',
     // 需求：每只 1 滴血、伤害 1、攻击频率每秒一次
     hp: 1, shield: 0, speed: 6.5, accel: 40,
@@ -338,7 +342,7 @@ export const ENEMY_TYPES = {
     //       间歇发出红色大型子弹，慢但多（每秒约 5 个）、追踪玩家、
     //       玩家射击可击破（子弹血量 1）、被命中伤害 40
     leapRange: 100, leapCooldown: 4.5,
-    keepMin: 45, keepMax: 90,
+    keepMin: 50, keepMax: 150,
     seedSpiderCooldown: 5, seedSpiderCount: 3,
     bulletBurstInterval: 4.0, bulletPerSecond: 5, bulletDamage: 40,
     bulletHp: 1, bulletSpeed: 11, bulletHoming: true,
@@ -522,7 +526,11 @@ export class EnemySystem {
     e.age = 0;
     e.hitFlash = 0;
     e.lastDamageTime = -99;
-    e.damageMul = ENEMY_DAMAGE_SCALE * (o.damageMul == null ? 1 : o.damageMul) * (1 + (d - 1) * 0.30);
+    // campaignDamageMul 由导演按整层设置。噩梦层用它把所有普通怪、Boss 与
+    // Boss 召唤物的伤害统一减半，避免某条生成路径漏传 opts.damageMul。
+    const campaignDamageMul = Number.isFinite(this.campaignDamageMul) ? this.campaignDamageMul : 1;
+    e.damageMul = ENEMY_DAMAGE_SCALE * campaignDamageMul
+      * (o.damageMul == null ? 1 : o.damageMul) * (1 + (d - 1) * 0.30);
     e.accuracyMul = (o.accuracyMul == null ? 1 : o.accuracyMul) * (0.72 + d * 0.28);
     e.elite = !!o.elite || !!type.elite;
     e.deadTime = 0;
@@ -530,10 +538,19 @@ export class EnemySystem {
     e.strafeTimer = 0.6 + this.rng() * 1.8;
     e.repositionTimer = 0;
     e.stuckTimer = 0;
+    // Physics recovery owns separate history from AI repositioning.
+    e.isCampaignBoss = false;
+    e.bossHitSlowTime = 0;
+    e.stuckLastPos = null;
+    e.stuckTime = 0;
+    e.stuckAttempts = 0;
+    e.stuckBlocked = [];
     e.lastPos = e.lastPos || new Float32Array(3);
     e.lastPos[0] = e.pos[0]; e.lastPos[1] = e.pos[1]; e.lastPos[2] = e.pos[2];
     e.meleeCooldown = 0;
     e.specialPhase = 'approach'; e.specialTimer = 0; e.slashT = 0;
+    // Pooled enemies must never inherit a previous boss phase or mine ownership.
+    for (const key of ['smashPhase','smashT','blinkT','waitT','divePhase','diveT','diveTarget','chargePhase','chargeT','chargeDist','chargeDir','chargeLast','chargeHit','chargeAfterHit','summonT','laserT','laserTarget','leapT','seedT','bulletT','hopT','punchT','vatKills','vatSpawnCd','vatId','stationarySeed','bossMoveSpeed','teleportSeq','nightmareDirectDamage']) delete e[key];
     e.wallJumpCooldown=2; e.wallJumpTimer=0; e.wallJumpMode=''; e.wallJumpNormal=null;
     e.summonCooldown=6; e.summonCast=0; e.summonerId=null;
     e.wallNormal = null; e.specialTarget = null; e.trailTimer = 0;
@@ -612,7 +629,18 @@ export class EnemySystem {
 
     // 需求 3：绿影（stalker）具有碰撞体积，且小范围人数过多时会自相残杀。
     // 放在主循环之后统一处理：需要看到全部绿影的最终位置才能算簇。
-    if (!this.replicated) this._updateStalkerPack(dt);
+    if (!this.replicated) {
+      this._updateStalkerPack(dt);
+      // Clone bodies keep their collision volume even in a 50-unit crowd.
+      const clones=this.all.filter(e=>e.alive&&e.type.cloneOf);
+      for(let i=0;i<clones.length;i++) for(let j=i+1;j<clones.length;j++) {
+        const a=clones[i],b=clones[j];let dx=b.pos[0]-a.pos[0],dz=b.pos[2]-a.pos[2],d=Math.hypot(dx,dz);
+        const r=a.radius+b.radius;if(d>=r)continue;
+        if(d<0.001){dx=0.001;dz=0;d=0.001;}
+        const push=(r-d)*0.5;
+        a.pos[0]-=dx/d*push;a.pos[2]-=dz/d*push;b.pos[0]+=dx/d*push;b.pos[2]+=dz/d*push;
+      }
+    }
   }
 
   /**
@@ -816,6 +844,18 @@ export class EnemySystem {
 
   _updateAI(e, dt, player) {
     const type = e.type;
+    // Dedicated boss state machines own velocity/aim; generic AI must not overwrite them.
+    if (type.tierBoss) { e.state = AI_ENGAGE; return; }
+    if (type.cloneOf && player?.alive) {
+      const d = M.dist3(e.pos, player.pos);
+      e.meleeCooldown = Math.max(0, e.meleeCooldown - dt);
+      this._moveToward(e, player.pos, dt, d > 1.5 ? 1 : 0);
+      if (d < type.attackRange && e.meleeCooldown <= 0) {
+        const campaignMul = Number.isFinite(this.campaignDamageMul) ? this.campaignDamageMul : 1;
+        player.applyDamage(1 * campaignMul, [0,0,0], e); e.meleeCooldown = 1;
+      }
+      return;
+    }
     if (type.behavior === 'hitrun' || type.behavior === 'bomber') {
       this._updateSpecialAI(e, dt, player); return;
     }
@@ -833,7 +873,8 @@ export class EnemySystem {
     const facing = -Math.cos(e.aimYaw - toPlayerYaw) > -1 ? 1 : 1; // 占位：用夹角判断
     void facing;
     const angleToPlayer = Math.abs(M.wrapAngle(toPlayerYaw - e.yaw));
-    const inCone = angleToPlayer < M.toRad(type.behavior === 'sniper' ? 70 : 110) || dist < 8;
+    const inCone = type.stationaryHighGround
+      || angleToPlayer < M.toRad(type.behavior === 'sniper' ? 70 : 110) || dist < 8;
     const canSee = dist < sightRange && inCone && this._hasLineOfSight(e, player, dist);
 
     // 听觉：玩家开火/冲刺会吸引注意
@@ -858,6 +899,22 @@ export class EnemySystem {
     }
 
     const inAttackRange = dist <= type.attackRange;
+
+    // 高台射手的出生点就是战术位置，不能沿普通 sniper 的“保持距离”逻辑
+    // 自己走下平台。看得见目标时原地扫线，失去视野时也留在高台等待。
+    if (type.stationaryHighGround) {
+      this._faceTowards(e, toPlayerYaw, dt, 2.2);
+      e.vel[0] = M.damp(e.vel[0], 0, 12, dt);
+      e.vel[2] = M.damp(e.vel[2], 0, 12, dt);
+      if (canSee && inAttackRange) {
+        e.state = AI_ENGAGE;
+        this._tryAttack(e, dt, player, dist);
+      } else {
+        e.state = heard ? AI_ALERT : AI_IDLE;
+        if (e.telegraphing) { e.telegraphing = false; this._clearAimBeam(e); }
+      }
+      return;
+    }
 
     switch (e.state) {
       case AI_IDLE:
@@ -964,6 +1021,7 @@ export class EnemySystem {
       this._specialFx('spider-charge',e.pos);
       return;
     }
+    if (e.stationarySeed) { e.vel.fill(0); return; }
     this._moveToward(e, player.pos, dt, 1);
     this._faceTowards(e,yaw,dt,10);
     this._spiderClimb(e,player);
@@ -1240,8 +1298,9 @@ export class EnemySystem {
     const l=Math.hypot(...dir)||1;
     for(let i=0;i<3;i++) dir[i]/=l;
     // 固定 50 基础伤害，不乘全局 0.35 或难度倍率；正常先盾后血。
-    player.applyDamage(amount,dir,e);
-    this.stats.damageDealt += amount;
+    const actual = amount * (Number.isFinite(this.campaignDamageMul) ? this.campaignDamageMul : 1);
+    player.applyDamage(actual,dir,e);
+    this.stats.damageDealt += actual;
   }
 
   _detonateSpider(e) {
@@ -1443,6 +1502,8 @@ export class EnemySystem {
 
   /** 失去视野时：向最后已知位置推进（并在卡住时绕行） */
   _reposition(e, dt, player) {
+    // Recover legacy entities without letting one enemy abort every physics frame.
+    if (!e.lastPos) e.lastPos = new Float32Array(e.pos);
     const target = (this._time - (e.lastSeenTime || 0) < 6 && e.lastSeen) ? e.lastSeen : player.pos;
     this._moveToward(e, target, dt, 0.85);
     // 卡住检测：位置几乎没变则侧向绕行
@@ -1526,7 +1587,9 @@ export class EnemySystem {
       }
       // 开始蓄力（玩家可以躲）
       e.telegraphing = true;
-      e.telegraph = w.telegraph / Math.max(0.5, e.accuracyMul);
+      // 高台狙击手的扫线时间不能被层级精度倍率压短，否则高层时红线尚未从
+      // 初始偏移扫到静止玩家就进入冻结段，表现为“玩家不动也永远瞄不到”。
+      e.telegraph = w.aimTurnRate ? w.telegraph : w.telegraph / Math.max(0.5, e.accuracyMul);
       e.sniperAim = w.laser;
       e.burstLeft = w.burst;
       e.burstCooldown = 0;
@@ -1553,7 +1616,11 @@ export class EnemySystem {
           a[0] /= L2; a[1] /= L2; a[2] /= L2;
         }
         e.aimLocked = false;
-        e.aimLockT = Number.isFinite(w.aimLockTime) ? w.aimLockTime : 0.5;
+        // aimLockT 是“距离进入冻结段还有多久”，不是冻结段本身的长度。
+        // 旧实现一开始只转 0.5 秒便冻结；34° 初始偏移在 0.85rad/s 下尚未追上
+        // 静止玩家，所以必定打偏。现在先完整扫准，再保留最后 0.5 秒冻结预警。
+        const lockTime = Number.isFinite(w.aimLockTime) ? w.aimLockTime : 0.5;
+        e.aimLockT = Math.max(0, e.telegraph - lockTime);
       } else {
         e.aimDir = null;
         e.aimLocked = false;
@@ -1789,6 +1856,8 @@ export class EnemySystem {
   // ---------------------------------------------------------------- 物理
 
   _physics(e, dt, externalMaxSpeed = 0) {
+    const moveMul = e.bossHitSlowTime > 0 ? 0.75 : 1;
+    e.bossHitSlowTime = Math.max(0, (e.bossHitSlowTime || 0) - dt);
     const type = e.type;
     if (!type.flying && !e.wallNormal) {
       e.vel[1] -= CFG.move.gravity * dt;
@@ -1796,13 +1865,13 @@ export class EnemySystem {
     }
     // 水平速度上限
     const hs = Math.hypot(e.vel[0], e.vel[2]);
-    const maxS = Math.max(type.speed * (type.behavior === 'hitrun' ? 1 : 1.35), externalMaxSpeed || 0);
+    const maxS = Math.max(type.speed * (type.behavior === 'hitrun' ? 1 : 1.35), externalMaxSpeed || 0, e.bossMoveSpeed || 0);
     if (hs > maxS) {
       const k = maxS / hs;
       e.vel[0] *= k; e.vel[2] *= k;
     }
 
-    const dx = e.vel[0] * dt, dy = e.vel[1] * dt, dz = e.vel[2] * dt;
+    const dx = e.vel[0] * dt * moveMul, dy = e.vel[1] * dt * (type.flying ? moveMul : 1), dz = e.vel[2] * dt * moveMul;
     const dist = Math.hypot(dx, dy, dz);
     const wasGrounded = !!e.grounded;
 
@@ -1838,7 +1907,7 @@ export class EnemySystem {
           if (type.behavior === 'bomber' || type.behavior === 'hitrun') {
             // 消费剩余切向位移：否则贴墙的蜘蛛每帧 t=0，只投影速度而永远爬不上去。
             const left=dt*(1-M.clamp01(hit.t/dist));
-            const delta=[e.vel[0]*left,e.vel[1]*left,e.vel[2]*left];
+            const delta=[e.vel[0]*left*moveMul,e.vel[1]*left,e.vel[2]*left*moveMul];
             const length=Math.hypot(...delta);
             if(length>1e-6) {
               const c=[e.pos[0],e.pos[1]+e.height*0.5,e.pos[2]];
@@ -1872,7 +1941,15 @@ export class EnemySystem {
     }
 
     // 掉出地图兜底
-    if (e.pos[1] < -120) {
+    if (e.pos[1] < -40 && e.isCampaignBoss && e.safeSpawn) {
+      // 首领绝不能因生成点边缘/墙跳数值误差掉进虚空而开局暴毙。
+      e.pos.set(e.safeSpawn);
+      e.vel.fill(0);
+      e.wallNormal = null;
+      e.wallJumpMode = '';
+      e.grounded = false;
+      this._specialFx('boss-summon', e.pos);
+    } else if (e.pos[1] < -120) {
       this.damage(e, 9999, false, e.pos, null, { source: 'void' });
     }
 
@@ -2011,18 +2088,18 @@ export class EnemySystem {
     // 早先把 hybridBoss 整个排除在外，结果 BOSS 卡缝隙时永远不会脱离。
     if (e.type.flying || e.type.meshKind === 'spider') {
       e.stuckTime = 0;
-      e.lastPos = null;
+      e.stuckLastPos = null;
       return;
     }
     if (e.wallNormal && (e.type.hybridBoss || e.wallJumpMode)) {
       e.stuckTime = 0;
-      e.lastPos = null;
+      e.stuckLastPos = null;
       return;
     }
     const isBoss = !!e.type.hybridBoss;
-    const lx = e.lastPos ? e.lastPos[0] : e.pos[0];
-    const lz = e.lastPos ? e.lastPos[2] : e.pos[2];
-    if (!e.lastPos) e.lastPos = [e.pos[0], e.pos[1], e.pos[2]];
+    const lx = e.stuckLastPos ? e.stuckLastPos[0] : e.pos[0];
+    const lz = e.stuckLastPos ? e.stuckLastPos[2] : e.pos[2];
+    if (!e.stuckLastPos) e.stuckLastPos = [e.pos[0], e.pos[1], e.pos[2]];
     const moved = Math.hypot(e.pos[0] - lx, e.pos[2] - lz);
     const wants = Math.hypot(e.vel[0], e.vel[2]);
 
@@ -2036,9 +2113,9 @@ export class EnemySystem {
     } else {
       e.stuckTime = 0;
     }
-    e.lastPos[0] = e.pos[0];
-    e.lastPos[1] = e.pos[1];
-    e.lastPos[2] = e.pos[2];
+    e.stuckLastPos[0] = e.pos[0];
+    e.stuckLastPos[1] = e.pos[1];
+    e.stuckLastPos[2] = e.pos[2];
 
     if (e.stuckTime < holdTime) return;
 
@@ -2148,11 +2225,19 @@ export class EnemySystem {
       // 需求 8 第 7 关：克隆罐不可被直接击杀 —— 它的结算方式是「累计 100 只
       // 哥布林死亡」，而不是挨够伤害。豁免放在最前，避免玩家把罐子当血包打，
       // 也避免它被溅射/自爆误伤而提前结束本层（vat-overload 是它自己的结算）。
-      if (e.type && e.type.unkillable && !(opts && opts.source === 'vat-overload')) {
+      if (e.type && e.type.unkillable && !e.nightmareDirectDamage
+        && !(opts && opts.source === 'vat-overload')) {
         res.blocked = true;
         return res;
       }
     const o = opts || {};
+    if (e.type.rangedImmune && !(o.melee || o.source === 'melee' || o.source === 'knife')) { res.blocked = true; return res; }
+    if (e.type.frontShield && hitPoint && !o.ignoreShield) {
+      const yaw = Math.atan2(-(hitPoint[0]-e.pos[0]), -(hitPoint[2]-e.pos[2]));
+      if (Math.abs(M.wrapAngle(yaw-e.yaw)) < e.type.shieldArc) {
+        res.blocked = true; res.shieldHit = true; return res;
+      }
+    }
     let dmg = amount;
 
     // 盾兵正面减伤
@@ -2221,6 +2306,8 @@ export class EnemySystem {
 
     // 实际扣除的总量（护盾 + 生命），而不是只返回护盾吸收量。
     res.damage = res.shieldDamage + res.healthDamage;
+    if (res.damage > 0 && (e.isCampaignBoss || e.type.tierBoss || e.type.hybridBoss)
+      && !o.melee && !o.explosion && (o.def || o.network)) e.bossHitSlowTime = 0.35;
     this.stats.damageDealt += res.damage;
     if (!o.countAsDealt) res.countAsDealt = true;
 
@@ -2243,7 +2330,7 @@ export class EnemySystem {
       const n = hitNormal || UP_V;
       this.hitReports.push(
         e.id, amount, headshot ? 1 : 0,
-        p[0], p[1], p[2], n[0], n[1], n[2],
+        p[0], p[1], p[2], n[0], n[1], n[2], o.melee === true,
       );
     }
     return res;
@@ -2255,6 +2342,22 @@ export class EnemySystem {
     e.deadTime = 0;
     e.hp = 0;
     this.stats.killed++;
+    if (e.type.cloneOf) {
+      const vat = this.all.find(v => v.alive && v.typeId === e.type.cloneOf && (!e.vatId || v.id === e.vatId));
+      // 只统计玩家实际击杀。旧逻辑把虚空、Boss 范围技和环境伤害也计入目标，
+      // 导致玩家只打几十只罐子就提前自爆通关。
+      const playerKill = !!(opts && (opts.def || opts.network || opts.melee
+        || opts.source === 'melee' || opts.source === 'knife'));
+      if (vat && !vat.nightmareDirectDamage && playerKill) {
+        vat.vatKills = (vat.vatKills || 0) + 1;
+        if (vat.vatKills < (vat.type.killGoal || 100)) {
+          const angle = this.rng()*Math.PI*2, r = 3+this.rng()*3;
+          const x=vat.pos[0]+Math.cos(angle)*r, z=vat.pos[2]+Math.sin(angle)*r;
+          const y=this.world.groundHeight(x,z);
+          if(Number.isFinite(y) && y > -200) { const clone=this.spawn('tier7CloneGoblin',[x,y+0.2,z]); clone.vatId=vat.id; }
+        }
+      }
+    }
     this._score += e.type.score * (headshot ? 1.5 : 1);
 
     // 死亡不再生成大团烟雾/粒子；它会遮挡准星与后方目标，连续击杀时尤其严重。
@@ -2284,8 +2387,8 @@ export class EnemySystem {
     const src = this.hitReports;
     if (src.length === 0) return out || [];
     const dst = out || [];
-    for (let i = 0; i + 8 < src.length; i += 9) {
-      dst.push([src[i], src[i + 1], src[i + 2], src[i + 3], src[i + 4], src[i + 5], src[i + 6], src[i + 7], src[i + 8]]);
+    for (let i = 0; i + 9 < src.length; i += 10) {
+      dst.push([src[i], src[i + 1], src[i + 2], src[i + 3], src[i + 4], src[i + 5], src[i + 6], src[i + 7], src[i + 8], src[i + 9] === true]);
     }
     src.length = 0;
     return dst;
@@ -2367,6 +2470,36 @@ export class EnemySystem {
     let bestT = maxDist;
     for (const e of this.all) {
       if (!e.alive) continue;
+      // 重盾机甲的蓝色护盾是实际 4.3m × 2.8m 的碰撞平面，而非只靠 Boss
+      // 身体命中盒上的小角度判断。只拦截从正面射入的射线，背后射击不受影响。
+      if (e.type.frontShield) {
+        const scale = e.scale || 1;
+        const fx = -Math.sin(e.yaw), fz = -Math.cos(e.yaw);
+        const rx = Math.cos(e.yaw), rz = -Math.sin(e.yaw);
+        const sx = e.pos[0] + fx * 3.55 * scale;
+        const sy = e.pos[1] + 1.6 * scale;
+        const sz = e.pos[2] + fz * 3.55 * scale;
+        const denom = dir[0] * fx + dir[2] * fz;
+        if (denom < -1e-5) {
+          const t = ((sx - origin[0]) * fx + (sz - origin[2]) * fz) / denom;
+          if (t >= 0 && t < bestT) {
+            const hx = origin[0] + dir[0] * t - sx;
+            const hy = origin[1] + dir[1] * t - sy;
+            const hz = origin[2] + dir[2] * t - sz;
+            const side = hx * rx + hz * rz;
+            if (Math.abs(side) <= 2.18 * scale && Math.abs(hy) <= 1.43 * scale) {
+              bestT = t;
+              if (!best) best = { enemy: e, t: 0, point: new Float32Array(3), normal: new Float32Array(3), headshot: false, legshot: false };
+              best.enemy = e; best.t = t;
+              best.point[0] = origin[0] + dir[0] * t;
+              best.point[1] = origin[1] + dir[1] * t;
+              best.point[2] = origin[2] + dir[2] * t;
+              best.normal[0] = fx; best.normal[1] = 0; best.normal[2] = fz;
+              best.headshot = false; best.legshot = false;
+            }
+          }
+        }
+      }
       // 先用包围球粗筛
       const cx = e.pos[0], cy = e.pos[1] + e.height * 0.5, cz = e.pos[2];
       const toC = (cx - origin[0]) * dir[0] + (cy - origin[1]) * dir[1] + (cz - origin[2]) * dir[2];
@@ -2449,7 +2582,7 @@ export class EnemySystem {
   }
 
   _renderType(e, type, list) {
-    const shape = type.hybridBoss ? HYBRID_SHAPE : SHAPES[type.meshKind] || SHAPES.humanoid;
+    const shape = getBossShape(type) || (type.hybridBoss ? HYBRID_SHAPE : SHAPES[type.meshKind] || SHAPES.humanoid);
     // 每个形状由多个"部件"组成，每个部件一次 instanced draw
     for (let partIdx = 0; partIdx < shape.length; partIdx++) {
       const part = shape[partIdx];
@@ -2466,6 +2599,18 @@ export class EnemySystem {
           const t = M.clamp01(en.deadTime / 1.4);
           if (t >= 1) continue;
           const s = 1 - t * 0.65;
+          if (part.bossModel) {
+            // 保留每个部件的形状；不能把所有部件都压成同一个单位方块。
+            this._writeEnemyPart(n, en, type, part, shape, partIdx, e);
+            const off = n * 16;
+            for (let j=0;j<12;j++) this._mats[off+j] *= s;
+            this._mats[off+12] = en.pos[0] + (this._mats[off+12]-en.pos[0])*s;
+            this._mats[off+13] = en.pos[1] + (this._mats[off+13]-en.pos[1])*s - t*.7;
+            this._mats[off+14] = en.pos[2] + (this._mats[off+14]-en.pos[2])*s;
+            for (let j=0;j<3;j++) this._cols[n*4+j] *= 1-t;
+            n++;
+            continue;
+          }
           const m = M.m4Compose(
             [en.pos[0], en.pos[1] - t * 0.7, en.pos[2]],
             en.yaw, en.type.behavior === 'melee' ? 1.4 * t : t * 1.1, t * 0.9,
@@ -2481,19 +2626,23 @@ export class EnemySystem {
           n++;
           continue;
         }
-        if (!e.inFrustumSphere([en.pos[0], en.pos[1] + en.height * 0.5, en.pos[2]], en.height * 1.2)) continue;
+        if (!e.inFrustumSphere([en.pos[0], en.pos[1] + en.height * 0.5, en.pos[2]], Math.max(en.height * 1.2, bossModelRadius(en)))) continue;
         this._writeEnemyPart(n, en, type, part, shape, partIdx, e);
         n++;
       }
       if (n > 0) {
         e.drawInstanced(mesh, this._mats.subarray(0, n * 16), n, {
           colors: this._cols.subarray(0, n * 4),
+          program: part.additive ? 'additive' : 'lit',
+          depthWrite: !part.additive,
+          cull: !part.additive,
         });
       }
     }
   }
 
   _writeEnemyPart(slot, en, type, part, shape, partIdx, engine) {
+    part = poseBossPart(en, part);
     const sc = en.scale;
     // 走路摆动（腿/手臂）
     const anim = Math.sin(en.animPhase + (part.phase || 0));
@@ -2507,6 +2656,7 @@ export class EnemySystem {
     if (type.behavior === 'hitrun' && isArm && part.name.endsWith('R')) swing -= Math.sin((en.slashT || 0) * Math.PI) * 1.8;
     if (part.spiderLeg) swing = anim * 0.24;
     if (part.onlyHitrun) swing = -Math.sin((en.slashT || 0)*Math.PI)*1.8;
+    if (part.bossModel) swing = 0;
     // 受击闪白
     const flash = M.clamp01(en.hitFlash + (en.specialPhase === 'charge' ? (0.5+0.5*Math.sin(en.age*32))*0.65 : 0));
     const color = type.color;
@@ -2546,7 +2696,7 @@ export class EnemySystem {
     // 自发光部位（眼睛/能量核心）用 accent 且提亮
     const isGlow = part.glow === true;
     const isAccent = part.accent === true;
-    const base = (isGlow || isAccent) ? accent : color;
+    const base = part.color || ((isGlow || isAccent) ? accent : color);
     const boost = (isGlow ? 0.92 : (part.shade == null ? 1 : part.shade));
     this._cols[co] = M.clamp01(base[0] * boost + flash * 0.9);
     this._cols[co + 1] = M.clamp01(base[1] * boost + flash * 0.9);

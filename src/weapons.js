@@ -1509,15 +1509,7 @@ export class WeaponSystem {
       damage: 0, headshot: false, legshot: false, killed: false, dist: maxDist,
     };
 
-    // 需求 8：记录本帧玩家的射击射线，供 projectiles 判定"击破敌方子弹"。
-    // 放在最前面，这样即使这一枪没打中任何东西，它仍然能拦截路径上的敌弹。
-    if (!this._shotRays) this._shotRays = [];
-    // 每帧清一次（由 update 在帧首调用 _clearShotRays）
-    this._shotRays.push({
-      ox: origin[0], oy: origin[1], oz: origin[2],
-      dx: dir[0], dy: dir[1], dz: dir[2], len: maxDist,
-    });
-    if (this._shotRays.length > 64) this._shotRays.shift();
+    // 弹丸拦截在本次射击按最近命中结算，不再延迟重复消费射线。
 
     // 敌人
     let enemyHit = null;
@@ -1532,6 +1524,14 @@ export class WeaponSystem {
 
     const query = { origin, dir, maxDistance: Math.min(maxDist, enemyT, worldT), hit: null };
     Events.emit('net:raycast-player', query);
+    const intercepted = this.projectiles?.raycastInterceptable?.(origin, dir,
+      Math.min(query.maxDistance, query.hit?.t ?? Infinity));
+    if (intercepted) {
+      this.projectiles.damageProjectile(intercepted.index, def.damage || 1);
+      Events.emit('audio:play', { name: 'hit_armor', gain: 0.8 });
+      return { ...res, hit: false, intercepted: true, point: intercepted.point,
+        endPoint: intercepted.point, damage: 0, dist: intercepted.t };
+    }
     if (query.hit && query.hit.t <= query.maxDistance) {
       const hit = query.hit;
       const body = charged && def.damageCharged != null ? def.damageCharged : def.damage;
@@ -1568,8 +1568,18 @@ export class WeaponSystem {
       if (this._comboDamageMul) dmg *= this._comboDamageMul;
 
       const r = this.enemies.damage(enemyHit.enemy, dmg, enemyHit.headshot, enemyHit.point, enemyHit.normal, {
-        crit, legshot: enemyHit.legshot, def,
+        crit, legshot: enemyHit.legshot, def, melee: def.class === 'melee',
       });
+      // 实体前盾/远程免疫只产生阻挡反馈，不计中弹、不触发吸血/连锁或穿透。
+      if (r?.blocked && r.damage === 0) {
+        res.endPoint = enemyHit.point;
+        res.point = enemyHit.point;
+        res.dist = enemyT;
+        res.damage = 0;
+        res.blocked = true;
+        Events.emit('audio:play', { name: 'hit_armor', pos: enemyHit.point, gain: 0.75 });
+        return res;
+      }
       if (def.class === 'melee') Events.emit('audio:play', { name: 'melee_hit', gain: 1.0 });
       res.hit = true;
       res.enemy = enemyHit.enemy;

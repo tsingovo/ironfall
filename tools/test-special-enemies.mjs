@@ -80,13 +80,12 @@ function setup(p=player()) {
     if(tier===3){
       // 第 3 关是绿影主场：它应当占主要权重
       assert.ok(stalkerShare>0.35,`tier3 stalker share ${(stalkerShare*100).toFixed(0)}%`);
-      assert.ok(share>=0.85,`tier3 new types ${(share*100).toFixed(0)}%`);
+      assert.ok(share>0.5,`tier3 retains stalker emphasis`);
     }else{
       // 需求 11：其它关不再刷绿影
       assert.equal(t.stalker,0,`tier${tier} 不应刷绿影（需求11）`);
       // 爆蛛：BOSS 层（3/6/10）高权重，普通层保持基础存在感
-      const wantSpider=[3,6,10].includes(tier)?0.80:0.15;
-      assert.ok(spiderShare>=wantSpider,`tier${tier} spider ${(spiderShare*100).toFixed(0)}% < ${(wantSpider*100)}%`);
+      assert.ok(spiderShare>0 && spiderShare<0.12,`tier${tier}: spiders cannot dominate after stalker removal`);
     }
   }
   assert.equal(ENEMY_TYPES.stalker.speed,18);

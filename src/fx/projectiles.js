@@ -6,6 +6,7 @@
 
 import { CFG } from '../core/config.js';
 import * as M from '../core/math.js';
+import * as Events from '../core/events.js';
 
 const FLOATS_PER_INST = 20;
 // 曳光的世界宽度统一缩放。保留数据层的武器参数和最小可见长度，
@@ -36,6 +37,7 @@ export class ProjectilePool {
     this.gravity = new Float32Array(capacity);
     this.damage = new Float32Array(capacity);
     this.ownerId = new Int32Array(capacity);
+    this.netMirror = new Uint8Array(capacity);
     // 需求 8 / 第 10 关：敌方大型子弹
     //   · hp           —— 血量 1，被玩家子弹命中即消失（"玩家射击可击破"）
     //   · interceptable—— 是否允许被玩家火力拦截
@@ -127,6 +129,7 @@ export class ProjectilePool {
     this.gravity[i] = o.gravity == null ? 0 : o.gravity;
     this.damage[i] = o.damage == null ? 0 : o.damage;
     this.ownerId[i] = o.ownerId == null ? 0 : o.ownerId;
+    this.netMirror[i] = 0;
     // 需求 8 / 第 10 关：可击破的敌方大型子弹 + 追踪
     //   hp>0 表示这颗子弹会被玩家火力打掉（"玩家射击可击破，子弹血量为 1"）
     this.hp[i] = o.hp == null ? 0 : o.hp;
@@ -137,6 +140,82 @@ export class ProjectilePool {
     const c = o.color || CFG.fx.sparkColor;
     this.cr[i] = c[0]; this.cg[i] = c[1]; this.cb[i] = c[2];
     return i;
+  }
+
+  /** Return the nearest active hostile bullet; caller compares t with world/enemy hits. */
+  raycastInterceptable(origin, dir, maxDistance) {
+    const length = Math.hypot(...dir);
+    if (!(length > 0) || !(maxDistance >= 0)) return null;
+    const d = [dir[0] / length, dir[1] / length, dir[2] / length];
+    let nearest = maxDistance, hit = null;
+    for (let i = 0; i < this.count; i++) {
+      if (this.ownerId[i] >= 0 || !this.interceptable[i] || this.hp[i] <= 0
+        || this.life[i] <= 0 || this.delayed[i] > 0) continue;
+      const center = [this.px[i], this.py[i], this.pz[i]];
+      const t = raySphere(origin, d, center, Math.max(0.12, this.width[i] * 0.55));
+      if (t == null || t > nearest) continue;
+      nearest = t;
+      const point = origin.map((v, axis) => v + d[axis] * t);
+      const normal = point.map((v, axis) => v - center[axis]);
+      const n = Math.hypot(...normal) || 1;
+      hit = { index: i, t, point, normal: normal.map(v => v / n) };
+    }
+    return hit;
+  }
+
+  /** Host snapshot: only interceptable hostile bullets, never callbacks or game objects. */
+  hostileSnapshot() {
+    const rows = [];
+    for (let i = 0; i < this.count; i++) {
+      if (this.netMirror[i] || this.ownerId[i] >= 0 || !this.interceptable[i]
+        || this.hp[i] <= 0 || this.life[i] <= 0) continue;
+      rows.push([this.px[i], this.py[i], this.pz[i], this.vx[i], this.vy[i], this.vz[i],
+        this.width[i], this.life[i], this.hp[i], Math.max(0, this.delayed[i]), this.cr[i], this.cg[i], this.cb[i]]);
+      if (rows.length >= 128) break;
+    }
+    return rows;
+  }
+
+  /** Guest full replacement. Mirrors never home, collide, or deal damage. */
+  applyHostileSnapshot(rows) {
+    if (!Array.isArray(rows)) return;
+    let count = 0;
+    for (let i = 0; i < this.count; i++) {
+      if (this.netMirror[i]) continue;
+      if (count !== i) for (const field of PROJECTILE_FIELDS) this[field][count] = this[field][i];
+      count++;
+    }
+    this.count = count;
+    for (const row of rows.slice(0, 128)) {
+      if (!Array.isArray(row) || row.length !== 13 || !row.every(Number.isFinite)
+        || row.slice(0, 3).some(v => Math.abs(v) > 1e6)
+        || row.slice(3, 6).some(v => Math.abs(v) > 200)
+        || row[6] <= 0 || row[6] > 10 || row[7] <= 0 || row[7] > 120
+        || row[8] <= 0 || row[8] > 100 || row[9] < 0 || row[9] > 60
+        || row.slice(10).some(v => v < 0 || v > 10)) continue;
+      const i = this.spawn(row.slice(0, 3), row.slice(3, 6), 1,
+        { ownerId: -1, width: row[6], life: row[7], hp: row[8], delayed: row[9], color: row.slice(10) });
+      if (i < 0) break;
+      this.netMirror[i] = 1;
+    }
+  }
+
+  /** Mark dead without reindexing: a weapon may still hold this frame's hit index. */
+  damageProjectile(index, amount = 1) {
+    if (!Number.isInteger(index) || index < 0 || index >= this.count || !(amount > 0)
+      || !this.interceptable[index] || this.hp[index] <= 0 || this.life[index] <= 0
+      || this.delayed[index] > 0 || this.ownerId[index] >= 0) return false;
+    this.hp[index] -= amount;
+    if (this.hp[index] <= 0) {
+      if (this.homing[index]) {
+        const pos = [this.px[index], this.py[index], this.pz[index]];
+        Events.emit('audio:play', { name: 'explosion', pos, gain: 0.92 });
+        Events.emit('fx:shake', { amount: 0.12, time: 0.10 });
+      }
+      this.life[index] = 0;
+      if (this.onIntercepted) this.onIntercepted(this.px[index], this.py[index], this.pz[index]);
+    }
+    return true;
   }
 
   /**
@@ -296,9 +375,32 @@ export class ProjectilePool {
     if (this.flashTime > 0) this.flashTime -= dt;
     if (this.flashWorldTime > 0) this.flashWorldTime -= dt;
 
+    // Legacy shot-ray path: actual firing rays only, nearest bullet only, clipped by cover.
+    if (!enemies?.replicated && intercepts) for (const shot of intercepts) {
+      const origin = [shot.ox, shot.oy, shot.oz], dir = [shot.dx, shot.dy, shot.dz];
+      const length = Math.hypot(...dir);
+      if (!origin.every(Number.isFinite) || !dir.every(Number.isFinite)
+        || !(length > 0) || !Number.isFinite(shot.len) || shot.len < 0) continue;
+      for (let axis = 0; axis < 3; axis++) dir[axis] /= length;
+      const wall = world?.raycast(origin, dir, shot.len, {});
+      const enemy = enemies?.raycastEnemies?.(origin, dir, shot.len);
+      const max = Math.min(shot.len, wall?.hit ? wall.t : Infinity, enemy?.t ?? Infinity);
+      const hit = this.raycastInterceptable(origin, dir, max);
+      if (hit) this.damageProjectile(hit.index, 1);
+    }
+
     // 弹丸推进（用射线步进避免穿透）
     let k = 0;
     for (let i = 0; i < this.count; i++) {
+      if (this.life[i] <= 0) continue;
+      if (this.netMirror[i]) {
+        // Position and orientation come from the next host snapshot, not guest AI.
+        this.life[i] -= dt;
+        if (this.life[i] <= 0) continue;
+        if (k !== i) for (const field of PROJECTILE_FIELDS) this[field][k] = this[field][i];
+        k++;
+        continue;
+      }
       // 延迟出现（需求 8 第 10 关的"一次齐射"用它错开发射时间）
       if (this.delayed[i] > 0) {
         this.delayed[i] -= dt;
@@ -309,6 +411,7 @@ export class ProjectilePool {
           this.life[k] = this.life[i]; this.maxLife[k] = this.maxLife[i];
           this.width[k] = this.width[i]; this.gravity[k] = this.gravity[i];
           this.damage[k] = this.damage[i]; this.ownerId[k] = this.ownerId[i];
+          this.netMirror[k] = this.netMirror[i];
           this.hp[k] = this.hp[i]; this.interceptable[k] = this.interceptable[i];
           this.homing[k] = this.homing[i]; this.speed0[k] = this.speed0[i];
           this.delayed[k] = this.delayed[i];
@@ -322,7 +425,12 @@ export class ProjectilePool {
       // 用"朝目标转向有限角度"而不是直接对准：保留慢速、可躲的手感，
       // 追踪能力过强会变成无法规避的必中弹。
       if (this.homing[i] && enemies && typeof enemies.players !== 'undefined') {
-        const pl = (enemies.players && enemies.players[0]) || null;
+        let pl = null, nearest = Infinity;
+        for (const player of enemies.players || []) {
+          if (!player || player.alive === false || player.stale || !player.pos) continue;
+          const distance = Math.hypot(player.pos[0] - this.px[i], player.pos[1] - this.py[i], player.pos[2] - this.pz[i]);
+          if (distance < nearest) { nearest = distance; pl = player; }
+        }
         if (pl && pl.alive !== false && pl.pos) {
           const sp = Math.hypot(this.vx[i], this.vy[i], this.vz[i]) || this.speed0[i];
           let tx = pl.pos[0] - this.px[i];
@@ -347,32 +455,6 @@ export class ProjectilePool {
         }
       }
 
-      // 需求 8：可击破的敌方子弹 —— 被玩家火力命中即消失。
-      // 判定放在推进之前：本帧玩家打出的曳光只要落在这颗子弹附近就算拦截，
-      // 用球体近似（子弹体积大，容差给 0.9m）。
-      if (this.interceptable[i] && intercepts && intercepts.length) {
-        let stopped = false;
-        for (let q = 0; q < intercepts.length; q++) {
-          const s = intercepts[q];
-          // 注意方向：要算"**子弹相对射线原点**"的位移再往射线方向投影。
-          // 反过来算（射线原点相对子弹）会得到负的 along，永远判不在线上
-          // —— 这里踩过一次，表现为"拦截完全不生效、调用方却看不出来"。
-          const ddx = this.px[i] - s.ox, ddy = this.py[i] - s.oy, ddz = this.pz[i] - s.oz;
-          const along = ddx * s.dx + ddy * s.dy + ddz * s.dz;
-          if (along < 0 || along > s.len) continue;       // 在射手背后或射程之外
-          const cx2 = ddx - s.dx * along, cy2 = ddy - s.dy * along, cz2 = ddz - s.dz * along;
-          // 子弹体积大，容差给 0.9m，让"对着弹幕开枪"确实能打掉
-          if (cx2 * cx2 + cy2 * cy2 + cz2 * cz2 <= 0.9 * 0.9) { stopped = true; break; }
-        }
-        if (stopped) {
-          this.hp[i] -= 1;
-          if (this.hp[i] <= 0) {
-            if (this.onIntercepted) this.onIntercepted(this.px[i], this.py[i], this.pz[i]);
-            continue;                       // 销毁
-          }
-        }
-      }
-
       this.vy[i] -= this.gravity[i] * dt;
       const dx = this.vx[i] * dt, dy = this.vy[i] * dt, dz = this.vz[i] * dt;
       const dist = Math.hypot(dx, dy, dz);
@@ -382,10 +464,35 @@ export class ProjectilePool {
         DIR_T[0] = dx / dist; DIR_T[1] = dy / dist; DIR_T[2] = dz / dist;
         ORIG_T[0] = this.px[i]; ORIG_T[1] = this.py[i]; ORIG_T[2] = this.pz[i];
         const wh = world ? world.raycast(ORIG_T, DIR_T, dist, {}) : null;
-        const eh = enemies ? enemies.raycastEnemies(ORIG_T, DIR_T, dist) : null;
+        const hostile = this.ownerId[i] < 0;
+        // Hostile shots never collide with their spawning boss or other enemies.
+        const eh = !hostile && enemies ? enemies.raycastEnemies(ORIG_T, DIR_T, dist) : null;
+        let playerHit = null, playerT = Infinity;
+        if (hostile && !enemies?.replicated) for (const player of enemies?.players || []) {
+          if (!player || player.alive === false || player.stale || !player.pos) continue;
+          const t = rayPlayer(ORIG_T, DIR_T, player, Math.max(0.03, this.width[i] * 0.55));
+          if (t != null && t <= dist && t < playerT) { playerT = t; playerHit = player; }
+        }
         const wt = wh && wh.hit ? wh.t : Infinity;
         const et = eh ? eh.t : Infinity;
-        if (et <= wt && eh) {
+        if (playerHit && playerT < wt) {
+          hitPt = [ORIG_T[0] + DIR_T[0] * playerT, ORIG_T[1] + DIR_T[1] * playerT, ORIG_T[2] + DIR_T[2] * playerT];
+          hitN = [-DIR_T[0], -DIR_T[1], -DIR_T[2]];
+          if (this.damage[i] > 0) playerHit.applyDamage?.(this.damage[i], DIR_T, 'enemy');
+          if (this.homing[i]) {
+            // 熔岩追踪弹命中必须有清楚的爆炸反馈，并把玩家真正掀离地面。
+            Events.emit('audio:play', { name: 'explosion', pos: hitPt, gain: 1.18 });
+            Events.emit('fx:shake', { amount: 0.45, time: 0.28 });
+            if (playerHit.vel) {
+              const horizontal = Math.hypot(DIR_T[0], DIR_T[2]) || 1;
+              playerHit.vel[0] += DIR_T[0] / horizontal * 18;
+              playerHit.vel[1] = Math.max(playerHit.vel[1] || 0, 9.5);
+              playerHit.vel[2] += DIR_T[2] / horizontal * 18;
+              if ('grounded' in playerHit) playerHit.grounded = false;
+              if (playerHit.state) playerHit.state.grounded = false;
+            }
+          }
+        } else if (et <= wt && eh) {
           hitPt = eh.point; hitN = eh.normal;
           if (this.damage[i] > 0) {
             enemies.damage(eh.enemy, this.damage[i], eh.headshot, eh.point, eh.normal, {});
@@ -410,6 +517,7 @@ export class ProjectilePool {
         this.life[k] = this.life[i]; this.maxLife[k] = this.maxLife[i];
         this.width[k] = this.width[i]; this.gravity[k] = this.gravity[i];
         this.damage[k] = this.damage[i]; this.ownerId[k] = this.ownerId[i];
+        this.netMirror[k] = this.netMirror[i];
         this.hp[k] = this.hp[i]; this.interceptable[k] = this.interceptable[i];
         this.homing[k] = this.homing[i]; this.speed0[k] = this.speed0[i];
         this.delayed[k] = this.delayed[i];
@@ -501,6 +609,7 @@ export class ProjectilePool {
       if (mesh) {
         let n = 0;
         for (let i = 0; i < this.count; i++) {
+          if (this.life[i] <= 0 || this.delayed[i] > 0) continue;
           const sp = Math.hypot(this.vx[i], this.vy[i], this.vz[i]) || 1;
           const len = M.clamp(sp * 0.05, 0.6, 4.0);
           const ex = this.px[i] - this.vx[i] / sp * len;
@@ -613,5 +722,38 @@ const DIR_T = new Float32Array(3);
 const ORIG_T = new Float32Array(3);
 const HIT_P = new Float32Array(3);
 const HIT_N = new Float32Array(3);
+const PROJECTILE_FIELDS = ['px','py','pz','vx','vy','vz','life','maxLife','width','gravity',
+  'damage','ownerId','netMirror','hp','interceptable','homing','speed0','delayed','cr','cg','cb'];
 
 export default ProjectilePool;
+
+// Normalized-ray intersections. Capsules follow current crouch/standing height.
+function raySphere(origin, dir, center, radius) {
+  const x = origin[0] - center[0], y = origin[1] - center[1], z = origin[2] - center[2];
+  const c = x*x + y*y + z*z - radius*radius;
+  if (c <= 0) return 0;
+  const b = x*dir[0] + y*dir[1] + z*dir[2], d = b*b - c;
+  if (d < 0) return null;
+  const t = -b - Math.sqrt(d);
+  return t >= 0 ? t : null;
+}
+function rayPlayer(origin, dir, player, padding) {
+  const base = player.pos, height = player.currentHeight || player.height || 1.8;
+  const bodyRadius = Math.min(height * 0.5, player.radius || 0.35);
+  const radius = bodyRadius + padding, low = base[1] + bodyRadius, high = base[1] + height - bodyRadius;
+  const x = origin[0] - base[0], z = origin[2] - base[2];
+  const nearestY = Math.max(low, Math.min(high, origin[1]));
+  if (x*x + z*z + (origin[1]-nearestY)**2 <= radius*radius) return 0;
+  let nearest = Infinity;
+  for (const y of [low, high]) {
+    const t = raySphere(origin, dir, [base[0], y, base[2]], radius);
+    if (t != null) nearest = Math.min(nearest, t);
+  }
+  const a = dir[0]**2 + dir[2]**2, b = x*dir[0] + z*dir[2];
+  const discriminant = b*b - a*(x*x + z*z - radius*radius);
+  if (a > 1e-10 && discriminant >= 0) {
+    const t = (-b - Math.sqrt(discriminant)) / a, y = origin[1] + dir[1]*t;
+    if (t >= 0 && y >= low && y <= high) nearest = Math.min(nearest, t);
+  }
+  return Number.isFinite(nearest) ? nearest : null;
+}

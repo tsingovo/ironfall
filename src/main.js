@@ -8,6 +8,7 @@ import { CFG } from './core/config.js';
 import * as M from './core/math.js';
 import * as Events from './core/events.js';
 import { Input } from './core/input.js';
+import { installDiagnostics } from './core/diagnostics.js';
 import { Engine } from './engine/engine.js';
 import { createSharedMeshes } from './engine/fx-meshes.js';
 import { World } from './world.js';
@@ -25,7 +26,7 @@ import { EnemyMarkerSystem } from './fx/enemy-markers.js';
 import { generateMap, MISSIONS, getMission, getBiome, BIOMES } from './maps/builtin-maps.js';
 import { loadGLTF, gltfInstanceModels } from './fx/gltf.js';
 import { HUD } from './ui/hud.js';
-import { Save, MetaProgress, PERKS } from './save.js';
+import { Save, MetaProgress, PERKS, CAMPAIGN_TIER_COUNT } from './save.js';
 import { InventorySystem, LOOT_DEFS } from './inventory.js';
 import { PlayerModelRenderer } from './player-model.js';
 import { LanSession, LAN_PHASE } from './net/session.js';
@@ -315,7 +316,7 @@ class Game {
       fov: CFG.render.fovDeg,
       volume: CFG.audio.master,
       invertY: false,
-      fpsCap: 0,
+      fpsCap: 240,
       quality: 'high',
       autoFullscreen: true,   // 开始远征时自动全屏，规避 Ctrl+W 等浏览器保留快捷键
       playerName: '',         // 局域网联机昵称；留空时按房主/玩家自动取名
@@ -534,6 +535,7 @@ class Game {
       tier: this.tier,
     });
     this.mapName = mapData.name || mission.title;
+    mapData.objectives = []; // 十一关统一首领战后撤离，不再生成追踪任务。
     this.world.load(mapData);
     // 需求：切换关卡不重置背包与配件。
     // preserve 时 inventory.reset 只换地图掉落，不清空背包槽与已装配件。
@@ -681,7 +683,7 @@ class Game {
     const lanStart = this._pendingLanStart;
     this._pendingLanStart = null;
     if (lanStart) {
-      this.tier = Math.max(1, Math.min(10, lanStart.tier || 1));
+      this.tier = Math.max(1, Math.min(CAMPAIGN_TIER_COUNT, lanStart.tier || 1));
       this.mapIndex = Math.max(0, lanStart.mapIndex | 0);
       this.loadMission(this.mapIndex, { seed: lanStart.seed });
     } else {
@@ -788,7 +790,7 @@ class Game {
 
   missionBrief() {
     const m = getMission(this.mapIndex);
-    return m ? m.brief : '工业星际远征 —— 突入并摧毁敌方设施';
+    return m ? `${m.title}\n击败本层守关首领，再在任意绿色撤离信标内坚持 2 秒。` : '击败首领，在任意撤离点坚持 2 秒';
   }
 
   /** 把剧情背景 + 本局任务简报喂给 HUD 的「远征简报」面板 */
@@ -800,8 +802,8 @@ class Game {
       world: (biome && biome.desc)
         ? `${biome.name}：${biome.desc}\n钢铁远征舰队把整支锻造舰队开进星系边缘，用星港把行星直接熔成战舰。你是被留在封锁区里的拾荒者，穿着拼装的外骨骼，靠拆解远征军的设备换一条命。`
         : undefined,
-      mission: MISSIONS.map((mission) => `第 ${mission.tier} 层 · ${mission.title}\n${mission.brief}`)
-        .join('\n\n') + '\n\n第 3、6、10 层有守关首领，击败后才能完成本层。第十层全部目标完成后自动结算，返回主菜单开始下一轮。',
+      mission: MISSIONS.map((mission) => `第 ${mission.tier} 层 · ${mission.title}\n守关首领：${['重装先锋','盾卫统领','绿影蛛皇','重盾机甲','神秘杀手','腐化龙','克隆哥布林大军','鬼火骑士','拳皇','熔岩守卫者','历代首领群 ×20'][mission.tier - 1]}。击败首领，再在任意绿色撤离点坚持 2 秒。`)
+        .join('\n\n') + '\n\n十一层均须击败守关首领，再在任意绿色撤离点内坚持 2 秒。第十一层“噩梦”共有 20 个历代首领，全部击败并撤离后进入下一轮。',
       tier: this.tier,
       biomeName: biome ? biome.name : '',
       mapName: this.mapName || '',
@@ -1079,16 +1081,16 @@ class Game {
         // 游玩中直接换关：**保留背包、配件与强化加成**，只换地图重新部署。
         // 联机时房主换关会经 _afterLanRunStart 广播新的 SESSION，
         // 房客自动重载同一张图（他们的背包同样保留）。
-        const tier = Math.max(1, Math.min(10, Number(payload && payload.tier) | 0));
+        const tier = Math.max(1, Math.min(CAMPAIGN_TIER_COUNT, Number(payload && payload.tier) | 0));
         if (this.menuKind) this.closeMenuPanel();
         this._switchTierKeepProgress(tier);
         break;
       }
       case 'select_mission': {
-        const tier = Math.max(1, Math.min(10, Number(payload && payload.tier) | 0));
+        const tier = Math.max(1, Math.min(CAMPAIGN_TIER_COUNT, Number(payload && payload.tier) | 0));
         // 需求：**关卡无条件开放，不锁定**。
         // 早先这里会拦下"超出已解锁层数"的选择并提示"任务尚未解锁"，
-        // 现在十关随时可以直接部署，方便测试与跳关。
+        // 现在十一关随时可以直接部署，方便测试与跳关。
         // 仍然记录当前层，因为导演的难度缩放与结算都读它。
         //
         // 从主菜单进来时也保留背包/配件/加成（与 ESC 菜单的切换关卡一致）——
@@ -1300,10 +1302,10 @@ class Game {
       alloy: this.run ? this.run.alloy : 0,
       score: this.run ? this.run.score : 0,
     });
-    // 十关战役不是只存在于数据表：成功撤离后“再次远征”会自动进入下一关，
+    // 十一关战役不是只存在于数据表：成功撤离后“再次远征”会自动进入下一关，
     // 也可从主菜单的战役选择重玩任意已解锁关卡。
     this._nextTier = p.extracted
-      ? (typeof this.meta.currentTier === 'function' ? this.meta.currentTier() : Math.min(10, this.tier + 1))
+      ? (typeof this.meta.currentTier === 'function' ? this.meta.currentTier() : Math.min(CAMPAIGN_TIER_COUNT, this.tier + 1))
       : this.tier;
     this.director.stop();
     if (this.inventory) this.inventory.setOpen(false, this.player);
@@ -1322,14 +1324,14 @@ class Game {
       else this.hud.toast('外骨骼失效', '信号中断……', 'warn');
     }
     Audio.play(p.extracted ? 'extract_success' : 'player_die');
-    if (p.extracted && this.tier === 10) {
+    if (p.extracted && this.tier === CAMPAIGN_TIER_COUNT) {
       this.menuKind = 'main';
       this.hud.showMenu('main');
       this.hud.setVisible(false);
       this.hud.el['menu-main-note'].textContent =
         `战役结算：击杀 ${st.kills || 0} · 获得 ${earned} 远征点数，战利品已入库。` +
-        '熔炉核心熄灭，封锁航道终于打开。你带着幸存者离开废墟，却收到另一座锻造星港的求救信号。' +
-        '远征尚未结束——下一轮从第一层开始，保留局外成长与仓库。';
+        '二十个噩梦首领相继倒下，伪装成求救信号的战斗记录终于停止循环。' +
+        '你从 N-0 带回了完整的敌军档案，但远征仍未结束——下一轮从第一层开始，保留局外成长与仓库。';
     }
     // 阵亡时也起自动重生倒计时，避免卡在结算界面
     if (!p.extracted) this._respawnTimer = 12;
@@ -1359,6 +1361,8 @@ class Game {
       const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
       if (!this._renderErrorLoggedAt || now - this._renderErrorLoggedAt > 1000) {
         this._renderErrorLoggedAt = now;
+        recordError('渲染异常: ' + String(err?.message || err), err?.stack);
+        this.diagnostics?.record('渲染异常', err);
         // eslint-disable-next-line no-console
         console.error('[IRONFALL] 渲染帧异常（已兜住，游戏继续）:', err);
       }
@@ -2258,7 +2262,7 @@ class Game {
    * 新的 SESSION，房客据此重载同一张图（他们的背包同样走 preserve 路径保留）。
    */
   _switchTierKeepProgress(tier) {
-    const next = Math.max(1, Math.min(10, Number(tier) | 0)) || 1;
+    const next = Math.max(1, Math.min(CAMPAIGN_TIER_COUNT, Number(tier) | 0)) || 1;
     this.tier = next;
     this.mapIndex = next - 1;
     if (this.hud) this.hud.hideMenu();
@@ -2853,6 +2857,7 @@ async function boot() {
     game = new Game(canvas, hudRoot);
     await game.init();
     game.applySettings(game.settings);
+    game.diagnostics = installDiagnostics(game);
     game.start();
     window.__IRONFALL__ = {
       game,

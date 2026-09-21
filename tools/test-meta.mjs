@@ -83,7 +83,7 @@ test('阵亡是否写仓库由调用方决定，recordRun 本身不写入', () =
 
 test('关卡无条件开放：新存档也能直接选任意一层', () => {
   const m = new MetaProgress({});
-  // 需求变更：关卡不再锁定，十关随时可直接部署。
+  // 需求变更：关卡不再锁定，十一关随时可直接部署。
   // 原先这里断言"新存档 setCurrentTier(2) === false"（不能跳关），
   // 现在反过来 —— 只有非法层数才被拒。
   assert.equal(m.maxUnlockedTier(), 1, '推进进度仍从第 1 关开始记录');
@@ -92,13 +92,13 @@ test('关卡无条件开放：新存档也能直接选任意一层', () => {
     assert.equal(m.setCurrentTier(tier), true, `第 ${tier} 关应当能设为当前层`);
     assert.equal(m.currentTier(), tier);
   }
-  assert.equal(m.setCurrentTier(11), false, '越界层数仍要拒绝');
+  assert.equal(m.setCurrentTier(CAMPAIGN_TIER_COUNT + 1), false, '越界层数仍要拒绝');
   assert.equal(m.setCurrentTier(0), false, '越界层数仍要拒绝');
   assert.equal(m.setCurrentTier(NaN), false, '非法值仍要拒绝');
   assert.equal(m.currentTier(), CAMPAIGN_TIER_COUNT, '被拒后当前层不变');
 });
 
-test('战役推进：逐关解锁到第 10 关，之后循环回第 1 关', () => {
+test('战役推进：逐关解锁到第 11 关，之后循环回第 1 关', () => {
   const m = new MetaProgress({});
   assert.equal(m.advanceCampaign(1), 2);
   assert.equal(m.maxUnlockedTier(), 2);
@@ -106,11 +106,11 @@ test('战役推进：逐关解锁到第 10 关，之后循环回第 1 关', () =
   for (let tier = 2; tier < CAMPAIGN_TIER_COUNT; tier++) {
     assert.equal(m.advanceCampaign(tier), tier + 1, `第 ${tier} 关之后应进入第 ${tier + 1} 关`);
   }
-  assert.equal(m.maxUnlockedTier(), CAMPAIGN_TIER_COUNT, '推进到第 10 关后解锁上限封顶');
+  assert.equal(m.maxUnlockedTier(), CAMPAIGN_TIER_COUNT, '推进到第 11 关后解锁上限封顶');
   assert.equal(m.currentTier(), CAMPAIGN_TIER_COUNT);
-  // 十层远征是闭环：第 10 关通关后回到第 1 关重新开始，
+  // 十一层远征是闭环：第 11 关通关后回到第 1 关重新开始，
   // 但已解锁层数（元进度）全部保留 —— 见 save.js advanceCampaign 的注释。
-  assert.equal(m.advanceCampaign(CAMPAIGN_TIER_COUNT), 1, '第 10 关之后循环回第 1 关');
+  assert.equal(m.advanceCampaign(CAMPAIGN_TIER_COUNT), 1, '第 11 关之后循环回第 1 关');
   assert.equal(m.maxUnlockedTier(), CAMPAIGN_TIER_COUNT, '循环回第 1 关不会丢失解锁上限');
   assert.equal(m.currentTier(), 1);
 });

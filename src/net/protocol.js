@@ -145,7 +145,7 @@ export const MSG = Object.freeze({
   SESSION: 'sess',        // 房主 → 全体：本局配置（地图种子、任务、名单）
   PLAYER: 'ps',           // 每个 peer → 全体：自身玩家状态（30 Hz）
   PLAYER_INFO: 'pi',      // 每个 peer → 全体：不常变的资料（上限、武器表、队色）
-  ENEMY: 'es',            // 房主 → 房客：敌人快照
+  ENEMY: 'es',            // 房主 → 房客：敌人快照；可选 p 为敌方可拦截弹丸全量表现快照
   ENEMY_FULL: 'ef',       // 房主 → 房客：全量敌人列表（加入/重连时）
   WORLD_EVENT: 'ev',      // 房主 → 全体：离散世界事件（死亡、掉落、目标、提示）
   HIT: 'hit',             // 房客 → 房主：命中申报
@@ -348,6 +348,8 @@ export function createCodec(tables = {}) {
  *   6 hp      7 shield   8 位标志
  *   9 maxHp  10 maxShield  11 scale
  *  12 specialPhase  13 specialTimer  14 wallNormal (vec3/null)  15 slashT
+ *  16 optional boss presentation object (sanitizeBossPresentation whitelist).
+ * ENEMY_TUPLE remains the minimum, so legacy 16-field snapshots still work.
  *
  * 后三项是 2.0.7 守关首领带来的：首领 `maxHp *= 5 + tier`、`maxShield *= 3`、
  * `scale = 1.6`。不同步上限，房客端血条会算成 600%；不同步 scale，房客看到的
@@ -355,10 +357,41 @@ export function createCodec(tables = {}) {
  */
 export const ENEMY_TUPLE = 16;
 
+/** Presentation only: never accept AI callbacks, targets or arbitrary entity properties. */
+export function sanitizeBossPresentation(value) {
+  const v = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const number = (key, min, max) => Number.isFinite(v[key])
+    ? q2(Math.max(min, Math.min(max, v[key]))) : 0;
+  const phase = (key, allowed, fallback) => allowed.includes(v[key]) ? v[key] : fallback;
+  const vector = (key, max, fallback) => {
+    const a = v[key];
+    return (Array.isArray(a) || ArrayBuffer.isView(a)) && a.length === 3
+      && Array.from(a).every(n => Number.isFinite(n) && Math.abs(n) <= max)
+      ? Array.from(a, q2) : fallback;
+  };
+  return {
+    smashPhase: phase('smashPhase', ['hunt', 'smash', 'wait'], 'hunt'),
+    smashT: number('smashT', 0, 60),
+    divePhase: phase('divePhase', ['circle', 'dive', 'climb'], 'circle'),
+    chargePhase: phase('chargePhase', ['aim', 'charge'], 'aim'),
+    vel: vector('vel', 200, [0, 0, 0]),
+    hopVy: number('hopVy', -200, 200),
+    grounded: v.grounded === true,
+    punchT: number('punchT', 0, 60),
+    seedT: number('seedT', 0, 60),
+    laserT: number('laserT', 0, 60),
+    laserTarget: vector('laserTarget', 1e6, null),
+    age: number('age', 0, 1e7),
+    teleportSeq: Number.isSafeInteger(v.teleportSeq) && v.teleportSeq >= 0 ? v.teleportSeq : 0,
+  };
+}
+
 /** 敌人位标志 */
 export const EFLAG = Object.freeze({
   ALIVE: 1 << 0,
   ELITE: 1 << 1,
+  // 噩梦关的克隆罐不生成哥布林，因而允许玩家直接造成伤害。
+  NIGHTMARE_DIRECT_DAMAGE: 1 << 2,
 });
 
 /** 清理聊天文本：去掉控制字符，限制长度 */

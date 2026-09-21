@@ -52,7 +52,6 @@ function setup(tier) {
   const d = new Director(w, enemies, p, {});
   d.active = true; d.enabled = true;
   d.start(run);
-  run.bossPending = true;
   return { d, enemies, run, p, w };
 }
 
@@ -81,12 +80,11 @@ console.log('\n需求 8：每关 boss');
   const bad = [];
   for (const tier of [1, 2]) {
     const { d, run } = setup(tier);
-    run.bossPending = tier >= 3;          // 与 director.start 的判定一致
     d._boss = null;
     for (let i = 0; i < 60; i++) d.update(1 / 60);
-    if (d._boss) bad.push(`tier${tier}`);
+    if (!d._boss) bad.push(`tier${tier}`);
   }
-  check('第 1/2 关没有 boss', bad.length === 0, bad.length ? bad.join(',') : '符合"第三关开始"');
+  check('第 1/2 关也有 boss', bad.length === 0, bad.length ? bad.join(',') : '符合十关统一');
 }
 
 // ── 3. 血量线性增长（拳皇除外，固定 500）
@@ -114,6 +112,7 @@ console.log('\n需求 8：每关 boss');
   check('重盾机甲有正面护盾配置', !!t.frontShield && t.shieldArc > 0);
   check('转向速率明显偏慢', t.turnRate > 0 && t.turnRate <= 1.5, `turnRate=${t.turnRate} rad/s`);
 
+  boss.pos.set([0, 0.2, 25]); boss.yaw=0;
   // 放蜘蛛：推进足够长时间
   const before = enemies.all.filter((e) => e.alive && e.typeId === 'blastSpider').length;
   for (let i = 0; i < 700; i++) d.update(1 / 60);
@@ -198,9 +197,9 @@ console.log('\n需求 8：每关 boss');
     // 拦截：构造一条正好穿过子弹的玩家射线，推进一帧后子弹应被销毁
     const bx = proj.px[n - 1], by = proj.py[n - 1], bz = proj.pz[n - 1];
     const before = proj.count;
-    d.enemies.projectiles.update(1 / 60, d.world, d.enemies, [
-      { ox: bx - 10, oy: by, oz: bz, dx: 1, dy: 0, dz: 0, len: 20 },
-    ]);
+    const hit = proj.raycastInterceptable([bx-10,by,bz],[1,0,0],20);
+    if(hit) proj.damageProjectile(hit.index,1);
+    proj.update(1/60,d.world,d.enemies);
     check('玩家射击可以击破这发子弹', proj.count < before,
       `子弹数 ${before} → ${proj.count}`);
   }
@@ -237,5 +236,15 @@ console.log('\n需求 8：每关 boss');
   void src;
 }
 
+{
+  const {d,enemies}=setup(1); d.update(1/60);
+  const boss=d._boss; boss.pos.set([0,5,0]); boss.vel.set([1,0,0]);
+  enemies.damage(boss,1,false,boss.pos,null,{def:{}});
+  check('子弹命中 Boss 刷新减速',boss.bossHitSlowTime===0.35);
+  enemies._physics(boss,0.1);
+  check('减速实际降低水平位移且不叠乘速度',Math.abs(boss.pos[0]-0.075)<0.001 && boss.vel[0]===1);
+  for(let i=0;i<4;i++) enemies._physics(boss,0.1);
+  check('减速自动到期',boss.bossHitSlowTime===0);
+}
 console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
 process.exitCode = fail > 0 ? 1 : 0;

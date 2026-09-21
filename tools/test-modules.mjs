@@ -377,8 +377,14 @@ if (wp) {
   probe.recoil = { patternIndex: 0, aimPitch: 0, aimYaw: 0, visPitch: 0, visYaw: 0, recoveryDelay: 0 };
   const noShakeState = { adsT: 0, spreadExtra: 0 };
   probe._applyRecoil(wp.WEAPONS.r99, noShakeState);
+  // 需求已经改为“无逐发瞬跳”：开火只建立目标速度，下一帧积分才平滑上抬。
+  const noInstantJump = probe.recoil.aimPitch === 0 && probe.recoil.visPitch === 0
+    && probe.recoil.targetPitch > 0;
+  probe.state = new Map([['r99', noShakeState]]); probe.slots = [{ id: 'r99' }]; probe.slotIndex = 0;
+  noShakeState.reloading = false; noShakeState.charging = false;
+  probe._updateRecoil(1 / 60, { fire: true });
   check('实际开火后恢复可控枪械后坐且散布仍累积',
-    probe.recoil.aimPitch > 0 && probe.recoil.visPitch > 0
+    noInstantJump && probe.recoil.aimPitch > 0 && probe.recoil.visPitch > 0
       && noShakeState.spreadExtra > 0);
 
   // 2.0 场景在未命中时可能有较重的世界射线判定；不允许把卡顿期间的射击
@@ -491,7 +497,7 @@ if (en) {
   check('全部兵种字段完整', bad.length === 0, bad.join(', '));
   const humanoidSizeBad = ids.filter((id) => {
     const def = en.ENEMY_TYPES[id];
-    return def.meshKind === 'humanoid'
+    return def.meshKind === 'humanoid' && !def.cloneOf
       && Math.abs(def.height * en.enemyBaseScale(def) - en.ENEMY_HUMANOID_HEIGHT) > 1e-6;
   });
   check('普通人形敌人与玩家同为 1.8m 且判定同步',

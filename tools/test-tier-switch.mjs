@@ -145,12 +145,12 @@ console.log('\n关卡解锁');
 const unlock = await ev(`(() => {
   const A = window.__IRONFALL__; const g = A.game;
   const bad = [];
-  for (let t = 1; t <= 10; t++) {
+  for (let t = 1; t <= 11; t++) {
     if (!g.meta.isTierUnlocked(t)) bad.push(t);
   }
   return { bad, tiers: g.meta.unlocked.tiers };
 })()`);
-check('十关全部可选（新存档也是如此）', unlock && unlock.bad.length === 0,
+check('十一关全部可选（新存档也是如此）', unlock && unlock.bad.length === 0,
   unlock ? `不可选: [${unlock.bad}] 推进进度=${unlock.tiers}` : 'n/a');
 
 console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);

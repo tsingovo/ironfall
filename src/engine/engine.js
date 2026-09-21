@@ -703,7 +703,7 @@ export class Engine {
   /** 向指定批次追加 count 个实例占位，返回可写的起始偏移 */
   reserveInBatch(mesh, count, opts) {
     if (!mesh || count <= 0) return -1;
-    const progName = opts && opts.unlit ? 'unlit' : 'lit';
+    const progName = opts?.program === 'additive' ? 'additive' : (opts && opts.unlit ? 'unlit' : 'lit');
     const noDepthTest = !!(opts && opts.noDepthTest);
     const b = this.drawList.begin(mesh, progName,
       opts ? opts.depthWrite !== false : true,

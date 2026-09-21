@@ -67,9 +67,10 @@ const oldServer = http.createServer((_req, res) => {
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
   res.end('<!doctype html><title>IRONFALL</title><div>IRONFALL // BUILD 1.9</div>');
 });
-const currentServer = http.createServer((_req, res) => {
+const currentServer = http.createServer((req, res) => {
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-  res.end(`<!doctype html><title>IRONFALL</title><div>${CURRENT_BUILD}</div>`);
+  if (req.url === '/src/core/config.js') res.end(configSrc);
+  else res.end('<!doctype html><title>IRONFALL</title><script type="module" src="src/main.js"></script>');
 });
 
 try {
